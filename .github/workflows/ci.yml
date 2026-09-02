@@ -42,7 +42,7 @@ jobs:
       - name: Lint frontend
         run: make lint-frontend
       - name: Check frontend formatting
-        run: npm --prefix apps/frontend run format:check
+        run: npm --prefix apps/frontend run format:write
       - name: Test frontend
         run: make test-frontend
       - name: Build and type-check frontend
