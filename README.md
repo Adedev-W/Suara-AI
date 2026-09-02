@@ -9,7 +9,7 @@ status in the browser.
 ```text
 .
 ├── apps
-│   ├── backend      # Python 3.13, FastAPI, and uv
+│   ├── backend      # Python 3.14, FastAPI, and uv
 │   └── frontend     # React, TypeScript, Vite, and Tailwind CSS
 ├── .github/workflows/ci.yml
 ├── compose.yaml
@@ -22,9 +22,9 @@ depend on frameworks or transport details.
 
 ## Prerequisites
 
-- Python 3.13 or newer
+- Python 3.14 or newer
 - [uv](https://docs.astral.sh/uv/)
-- Node.js 22.12 or newer
+- Node.js 24 LTS or newer
 - npm
 - GNU Make
 - Docker, only for production-image workflows
@@ -39,6 +39,9 @@ make install
 The first installation creates `apps/backend/uv.lock` and
 `apps/frontend/package-lock.json`. Commit both lockfiles so subsequent installs
 and CI runs resolve the same dependency versions.
+
+The frontend uses TypeScript 7 for compilation and the TypeScript 6 compatibility
+package for ESLint's compiler API integration.
 
 ## Development
 
