@@ -1,4 +1,4 @@
-# SuaraAI
+![Suara AI logo](overview.png)
 
 SuaraAI is a clean-architecture monorepo with a FastAPI backend and a React
 frontend. The initial application exposes an API health check and renders its
