@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - uses: astral-sh/setup-uv@v6
+      - name: Install backend dependencies
+        run: uv sync --project apps/backend
+      - name: Lint backend
+        run: make lint-backend
+      - name: Check backend formatting
+        run: cd apps/backend && uv run ruff format --check .
+      - name: Type-check backend
+        run: make typecheck-backend
+      - name: Test backend
+        run: make test-backend
+      - name: Build backend package
+        run: make build-backend
+
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install frontend dependencies
+        run: npm --prefix apps/frontend install
+      - name: Lint frontend
+        run: make lint-frontend
+      - name: Check frontend formatting
+        run: npm --prefix apps/frontend run format:check
+      - name: Test frontend
+        run: make test-frontend
+      - name: Build and type-check frontend
+        run: make build-frontend
+
+  containers:
+    runs-on: ubuntu-latest
+    needs: [backend, frontend]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build production images
+        run: docker compose build
