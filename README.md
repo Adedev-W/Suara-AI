@@ -1,6 +1,6 @@
 <picture>
     <source media="(prefers-color-scheme: dark)" srcset="assets/suaraai-overview_light.png">
-    <source media="(prefers-color-scheme: light)" srcset="assets/suaraai-overview_light.png">
+    <source media="(prefers-color-scheme: light)" srcset="assets/suaraai-overview_dark.png">
     <img alt="Suara AI logo" src="assets/suaraai-overview_light.png" width="180">
 </picture>
 
