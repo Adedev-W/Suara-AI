@@ -10,5 +10,5 @@ class HealthResponse(BaseModel):
     service: str
 
     @classmethod
-    def from_domain(cls, health: ServiceHealth) -> "HealthResponse":
+    def from_domain(cls, health: ServiceHealth) -> HealthResponse:
         return cls(status=health.status, service=health.service)

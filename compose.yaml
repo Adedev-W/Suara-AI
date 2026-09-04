@@ -5,6 +5,8 @@ services:
     environment:
       SUARAAI_API_PREFIX: ${SUARAAI_API_PREFIX:-/api/v1}
       SUARAAI_APP_NAME: ${SUARAAI_APP_NAME:-SuaraAI API}
+      ASSEMBLYAI_API_KEY: ${ASSEMBLYAI_API_KEY:?ASSEMBLYAI_API_KEY is required}
+      TAVILY_API_KEY: ${TAVILY_API_KEY:?TAVILY_API_KEY is required}
     ports:
       - "8000:8000"
     healthcheck:

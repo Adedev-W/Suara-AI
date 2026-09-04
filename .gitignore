@@ -10,7 +10,7 @@ __pycache__/
 .ruff_cache/
 .venv/
 dist/
-
+apps/backend/.venv
 # Frontend
 node_modules/
 apps/frontend/dist/

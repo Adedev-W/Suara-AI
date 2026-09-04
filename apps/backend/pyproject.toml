@@ -4,7 +4,11 @@ version = "0.1.0"
 description = "SuaraAI FastAPI backend"
 requires-python = ">=3.14"
 dependencies = [
+    "assemblyai>=1.1.0",
     "fastapi>=0.141.1,<0.142",
+    "python-dotenv>=1.2.3",
+    "requests>=2.34.2",
+    "tavily-python>=0.8.0",
     "uvicorn[standard]>=0.52.4,<0.53",
 ]
 

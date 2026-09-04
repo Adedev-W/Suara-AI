@@ -3,6 +3,7 @@ from fastapi import FastAPI
 from suaraai.application.get_health_status import GetHealthStatus
 from suaraai.infrastructure.settings import Settings, load_settings
 from suaraai.presentation.api.health import create_health_router
+from suaraai.presentation.api.search import create_search_router
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -11,6 +12,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.include_router(
         create_health_router(GetHealthStatus()),
         prefix=resolved_settings.api_prefix,
+    )
+    application.include_router(
+        create_search_router(resolved_settings), prefix=resolved_settings.api_prefix
     )
     return application
 

@@ -70,10 +70,10 @@ build-frontend:
 check: lint format-check typecheck test build
 
 docker-build:
-	docker compose build
+	sudo docker compose build
 
 docker-up:
-	docker compose up --build
+	sudo docker compose up --build
 
 docker-down:
-	docker compose down
+	sudo docker compose down
