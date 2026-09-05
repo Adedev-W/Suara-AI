@@ -4,6 +4,22 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/image-favicon.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <style>@import url('https://fonts.googleapis.com/css2?family=Google+Sans:ital,opsz,wght@0,17..18,400..700;1,17..18,400..700&display=swap');</style>
+    <meta name="color-scheme" content="light dark" />
+    <script>
+      // Resolve the saved preference before the first paint, including when storage is blocked.
+      (() => {
+        let preference = 'system'
+        try {
+          const saved = localStorage.getItem('suaraai-theme')
+          if (['system', 'light', 'dark'].includes(saved)) preference = saved
+        } catch {}
+        document.documentElement.dataset.themePreference = preference
+        document.documentElement.dataset.theme = preference === 'system'
+          ? (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
+          : preference
+      })()
+    </script>
     <meta name="description" content="SuaraAI is a considered search engine for spoken questions." />
     <title>SuaraAI — Search by speaking</title>
   </head>
