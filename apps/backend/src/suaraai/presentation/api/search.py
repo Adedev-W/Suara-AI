@@ -6,6 +6,7 @@ from typing import Any
 from assemblyai.streaming.v3 import (  # type: ignore[import-untyped]
     AsyncRealTimeTranscriber,
     Encoding,
+    RealTimeError,
     RealTimeEvents,
     RealTimeParameters,
     RealTimeTranscriberOptions,
@@ -26,6 +27,10 @@ def create_search_router(settings: Settings) -> APIRouter:
         transcriber: AsyncRealTimeTranscriber | None = None
         search_service: SearchVoice | None = None
         final_transcript = ""
+        audio_buffer = bytearray()
+        min_audio_bytes = 1600
+        target_audio_bytes = 3200
+        max_audio_bytes = 32000
 
         async def send_transcript(_: Any, event: TurnEvent) -> None:
             nonlocal final_transcript
@@ -36,6 +41,34 @@ def create_search_router(settings: Settings) -> APIRouter:
                     {"type": "transcript", "text": event.transcript, "final": event.end_of_turn}
                 )
 
+        async def send_transcription_error(_: Any, error: RealTimeError) -> None:
+            await websocket.send_json(
+                {
+                    "type": "error",
+                    "code": "upstream",
+                    "message": "Voice transcription was interrupted. Please try again.",
+                }
+            )
+
+        async def stream_buffered_audio() -> None:
+            if transcriber is None:
+                return
+            while len(audio_buffer) >= target_audio_bytes:
+                chunk = bytes(audio_buffer[:target_audio_bytes])
+                del audio_buffer[:target_audio_bytes]
+                await transcriber.stream(chunk)
+
+        async def flush_audio_buffer() -> None:
+            if transcriber is None or not audio_buffer:
+                return
+            if len(audio_buffer) < min_audio_bytes:
+                audio_buffer.extend(b"\x00" * (min_audio_bytes - len(audio_buffer)))
+            while audio_buffer:
+                chunk_size = min(len(audio_buffer), max_audio_bytes)
+                chunk = bytes(audio_buffer[:chunk_size])
+                del audio_buffer[:chunk_size]
+                await transcriber.stream(chunk)
+
         try:
             await websocket.send_json({"type": "ready"})
             while True:
@@ -44,7 +77,18 @@ def create_search_router(settings: Settings) -> APIRouter:
                     break
                 if message.get("bytes") is not None:
                     if transcriber is not None:
-                        await transcriber.stream(message["bytes"])
+                        audio = message["bytes"]
+                        if not audio or len(audio) % 2:
+                            await websocket.send_json(
+                                {
+                                    "type": "error",
+                                    "code": "invalid_audio",
+                                    "message": "Audio data must contain 16-bit PCM samples.",
+                                }
+                            )
+                            continue
+                        audio_buffer.extend(audio)
+                        await stream_buffered_audio()
                     continue
 
                 payload = message.get("text")
@@ -66,11 +110,13 @@ def create_search_router(settings: Settings) -> APIRouter:
                         RealTimeTranscriberOptions(api_key=settings.assemblyai_api_key),
                     )
                     transcriber.on(RealTimeEvents.Turn, send_transcript)
+                    transcriber.on(RealTimeEvents.Error, send_transcription_error)
                     await transcriber.connect(
                         RealTimeParameters(sample_rate=16000, encoding=Encoding.pcm_s16le)
                     )
                     await websocket.send_json({"type": "listening"})
                 elif command_type == "stop" and transcriber is not None:
+                    await flush_audio_buffer()
                     await transcriber.disconnect(terminate=True)
                     transcriber = None
                 elif command_type == "search":
