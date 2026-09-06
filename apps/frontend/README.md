@@ -1,32 +1,33 @@
-# React + TypeScript + Vite
+# SuaraAI web client
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+This React and TypeScript client implements the browser flow from the PRD:
+setup, Talk Map review, camera readiness, realtime speaking assistance, local
+recording review, structured feedback, and optional materials Q&A.
 
-Currently, two official plugins are available:
+## Commands
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+Run these from `apps/frontend`, or add `--prefix apps/frontend` when running
+them from the repository root:
 
-## React Compiler
-
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the Oxlint configuration
-
-If you are developing a production application, we recommend enabling type-aware lint rules by installing `oxlint-tsgolint` and editing `.oxlintrc.json`:
-
-```json
-{
-  "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["react", "typescript", "oxc"],
-  "options": {
-    "typeAware": true
-  },
-  "rules": {
-    "react/rules-of-hooks": "error",
-    "react/only-export-components": ["warn", { "allowConstantExport": true }]
-  }
-}
+```bash
+npm install
+npm run dev
+npm run lint
+npm run typecheck
+npm run build
 ```
 
-See the [Oxlint rules documentation](https://oxc.rs/docs/guide/usage/linter/rules) for the full list of rules and categories.
+The client reads `VITE_API_BASE_URL` at build time and defaults to `/api/v1`.
+The Vite development proxy forwards that path to the local FastAPI server.
+
+The frontend does not currently include a browser test runner. `npm run test`
+therefore runs the TypeScript compilation smoke check used by the repository
+workflow. Pure browser integrations should be manually verified with the
+checklist in `../../docs/validation.md` until a test runner is introduced.
+
+## Browser requirements
+
+The recording flow requires camera and microphone permission, `MediaRecorder`,
+`AudioWorklet`, and a secure context in production. The browser sends 16 kHz
+mono PCM16 audio to the AssemblyAI streaming socket and retains the video blob
+locally for playback and download.

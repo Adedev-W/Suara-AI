@@ -1,98 +1,356 @@
-import { useEffect, useRef, useState, type CSSProperties } from 'react'
+import { useEffect, useRef, useState, type FormEvent, type ReactNode, type RefObject } from 'react'
 import './App.css'
 import lightLogo from './assets/suaraai-logo-light.png'
-import darkLogo from './assets/suaraai-logo-dark.png'
+import { ThemePicker } from './ThemePicker'
+import type { Feedback, FlowState, InputKind, Session, StateEvent, TalkMap } from './domain/types'
+import { completeSession, prepareSession, askKnowledge, updateTalkMap, uploadKnowledge } from './lib/api'
+import { connectAudioToSocket, createVideoRecorder, stopMediaStream, type AudioPipeline } from './lib/audio'
+import { event, fillerDensity, repetitionScore, selectHint, semanticProgress, SpeakingFlowMachine } from './lib/flow'
+import { findActiveNode, updateNodeStatuses } from './lib/talkMap'
+import { openAssemblySocket, parseSttMessage } from './lib/stt'
 
-type VoiceStage = 'idle' | 'connecting' | 'listening' | 'transcript' | 'searching' | 'error'
-type ThemePreference = 'system' | 'light' | 'dark'
-type SearchResult = { title: string; url: string; domain: string; snippet: string; favicon_url: string | null; image_url: string | null; published_date: string | null; score: number | null }
-
-const workletSource = `class PcmProcessor extends AudioWorkletProcessor { process(inputs) { const channel = inputs[0]?.[0]; if (channel) this.port.postMessage(channel); return true; } } registerProcessor('suaraai-pcm', PcmProcessor);`
-
-function encodePcm(floatSamples: Float32Array, inputRate: number): ArrayBuffer {
-  const ratio = inputRate / 16000
-  const length = Math.round(floatSamples.length / ratio)
-  const output = new ArrayBuffer(length * 2)
-  const view = new DataView(output)
-  for (let i = 0; i < length; i += 1) {
-    const sample = floatSamples[Math.min(Math.floor(i * ratio), floatSamples.length - 1)]
-    view.setInt16(i * 2, Math.max(-1, Math.min(1, sample)) * 0x7fff, true)
-  }
-  return output
-}
+type AppMode = 'setup' | 'map' | 'ready' | 'recording' | 'preview' | 'feedback'
 
 function MicIcon() { return <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="3" width="8" height="12" rx="4" /><path d="M5 11a7 7 0 0 0 14 0M12 18v3M9 21h6" /></svg> }
-function CloseIcon() { return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg> }
 function ArrowIcon() { return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h13M13 6l6 6-6 6" /></svg> }
 
 function App() {
-  const [isModalOpen, setIsModalOpen] = useState(false)
-  const [isModalClosing, setIsModalClosing] = useState(false)
-  const [theme, setTheme] = useState<ThemePreference>(() => (localStorage.getItem('suaraai-theme') as ThemePreference) || 'system')
-  const [voiceStage, setVoiceStage] = useState<VoiceStage>('idle')
+  const [mode, setMode] = useState<AppMode>('setup')
+  const [inputKind, setInputKind] = useState<InputKind>('topic')
+  const [inputText, setInputText] = useState('')
+  const [session, setSession] = useState<Session | null>(null)
+  const [talkMap, setTalkMap] = useState<TalkMap | null>(null)
+  const [activeIndex, setActiveIndex] = useState(0)
+  const [covered, setCovered] = useState<Set<string>>(new Set())
   const [transcript, setTranscript] = useState('')
-  const [results, setResults] = useState<SearchResult[]>([])
+  const [partialTranscript, setPartialTranscript] = useState('')
+  const [flowState, setFlowState] = useState<FlowState>('FLOWING')
+  const [hint, setHint] = useState<ReturnType<typeof selectHint>>(null)
+  const [recordingSeconds, setRecordingSeconds] = useState(0)
+  const [sttStatus, setSttStatus] = useState('Preparing live assistance')
   const [error, setError] = useState('')
+  const [feedback, setFeedback] = useState<Feedback | null>(null)
+  const [videoUrl, setVideoUrl] = useState<string | null>(null)
+  const [documentStatus, setDocumentStatus] = useState('')
+  const [question, setQuestion] = useState('')
+  const [answer, setAnswer] = useState('')
+  const [sources, setSources] = useState<string[]>([])
+  const [isSubmitting, setIsSubmitting] = useState(false)
+  const [isListening, setIsListening] = useState(false)
+  const [cameraReady, setCameraReady] = useState(false)
+  const [mediaStream, setMediaStream] = useState<MediaStream | null>(null)
+  const [stateEvents, setStateEvents] = useState<StateEvent[]>([])
+  const videoRef = useRef<HTMLVideoElement>(null)
+  const recorderRef = useRef<MediaRecorder | null>(null)
+  const audioRef = useRef<AudioPipeline | null>(null)
   const socketRef = useRef<WebSocket | null>(null)
-  const streamRef = useRef<MediaStream | null>(null)
-  const contextRef = useRef<AudioContext | null>(null)
-  const sourceRef = useRef<MediaStreamAudioSourceNode | null>(null)
-  const nodeRef = useRef<AudioWorkletNode | null>(null)
-  const flushAudioRef = useRef<(() => void) | null>(null)
+  const chunksRef = useRef<Blob[]>([])
+  const machineRef = useRef(new SpeakingFlowMachine())
+  const lastSpeechAtRef = useRef(Date.now())
+  const stableSegmentRef = useRef('')
+  const talkMapRef = useRef<TalkMap | null>(null)
+  const activeIndexRef = useRef(0)
+  const coveredRef = useRef<Set<string>>(new Set())
+  const flowStateRef = useRef<FlowState>('FLOWING')
 
-  const cleanupAudio = () => { flushAudioRef.current = null; nodeRef.current?.disconnect(); sourceRef.current?.disconnect(); streamRef.current?.getTracks().forEach((track) => track.stop()); contextRef.current?.close(); nodeRef.current = null; sourceRef.current = null; streamRef.current = null; contextRef.current = null }
-  const closeSocket = () => { socketRef.current?.close(); socketRef.current = null }
-  const closeModal = () => { if (isModalClosing) return; cleanupAudio(); closeSocket(); setIsModalClosing(true); window.setTimeout(() => { setIsModalOpen(false); setIsModalClosing(false); setVoiceStage('idle') }, 200) }
+  useEffect(() => { talkMapRef.current = talkMap }, [talkMap])
+  useEffect(() => { activeIndexRef.current = activeIndex }, [activeIndex])
+  useEffect(() => { coveredRef.current = covered }, [covered])
+  useEffect(() => { flowStateRef.current = flowState }, [flowState])
 
-  useEffect(() => () => { cleanupAudio(); closeSocket() }, [])
-  useEffect(() => { if (!isModalOpen) return; const onKey = (event: KeyboardEvent) => { if (event.key === 'Escape') closeModal() }; window.addEventListener('keydown', onKey); return () => window.removeEventListener('keydown', onKey) }, [isModalOpen])
-  useEffect(() => { localStorage.setItem('suaraai-theme', theme); document.documentElement.dataset.theme = theme }, [theme])
+  useEffect(() => {
+    if (videoRef.current && mediaStream) videoRef.current.srcObject = mediaStream
+  }, [mediaStream])
 
-  const startAudio = async (socket: WebSocket) => {
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
-    const context = new AudioContext()
-    const moduleUrl = URL.createObjectURL(new Blob([workletSource], { type: 'application/javascript' }))
-    await context.audioWorklet.addModule(moduleUrl)
-    URL.revokeObjectURL(moduleUrl)
-    const source = context.createMediaStreamSource(stream)
-    const node = new AudioWorkletNode(context, 'suaraai-pcm')
-    const silentGain = context.createGain(); silentGain.gain.value = 0
-    const samplesPerChunk = Math.max(1, Math.round(context.sampleRate * 0.1))
-    let pendingSamples = new Float32Array(samplesPerChunk)
-    let pendingLength = 0
-    const sendChunk = (samples: Float32Array) => { if (socket.readyState === WebSocket.OPEN) socket.send(encodePcm(samples, context.sampleRate)) }
-    const appendSamples = (samples: Float32Array) => {
-      let offset = 0
-      while (offset < samples.length) {
-        const copyLength = Math.min(samples.length - offset, samplesPerChunk - pendingLength)
-        pendingSamples.set(samples.subarray(offset, offset + copyLength), pendingLength)
-        pendingLength += copyLength
-        offset += copyLength
-        if (pendingLength === samplesPerChunk) { sendChunk(pendingSamples); pendingSamples = new Float32Array(samplesPerChunk); pendingLength = 0 }
+  useEffect(() => () => {
+    audioRef.current?.close()
+    socketRef.current?.close()
+    stopMediaStream(mediaStream)
+    if (videoUrl) URL.revokeObjectURL(videoUrl)
+  }, [mediaStream, videoUrl])
+
+  useEffect(() => {
+    if (mode !== 'recording') return
+    const timer = window.setInterval(() => {
+      setRecordingSeconds((value) => value + 0.25)
+      evaluateFlow()
+    }, 250)
+    return () => window.clearInterval(timer)
+  }, [mode])
+
+  const addEvent = (nextEvent: StateEvent) => setStateEvents((current) => [...current, nextEvent])
+
+  const evaluateFlow = () => {
+    const currentTalkMap = talkMapRef.current
+    const currentActiveIndex = activeIndexRef.current
+    const nextState = machineRef.current.observe({
+      silenceMs: Date.now() - lastSpeechAtRef.current,
+      fillerDensity: fillerDensity(stableSegmentRef.current),
+      repetitionScore: repetitionScore(stableSegmentRef.current),
+      semanticProgress: semanticProgress(currentTalkMap?.nodes[currentActiveIndex], stableSegmentRef.current),
+      activeNodeComplete: Boolean(
+        currentTalkMap?.nodes[currentActiveIndex]
+        && coveredRef.current.has(currentTalkMap.nodes[currentActiveIndex].id),
+      ),
+      recentlyCompletedSection: false,
+    })
+    applyFlowDecision(nextState.state, nextState.changed)
+  }
+
+  const applyFlowDecision = (nextState: FlowState, changed: boolean) => {
+    const currentTalkMap = talkMapRef.current
+    const currentActiveIndex = activeIndexRef.current
+    if (changed) addEvent(event(nextState, undefined, nextState, currentTalkMap?.nodes[currentActiveIndex]?.id))
+    flowStateRef.current = nextState
+    setFlowState(nextState)
+    setHint(selectHint(currentTalkMap ?? { title: '', nodes: [] }, currentActiveIndex, nextState))
+  }
+
+  const handleTurn = (turnText: string, final: boolean) => {
+    const cleaned = turnText.trim()
+    if (!cleaned) return
+    setPartialTranscript(final ? '' : cleaned)
+    lastSpeechAtRef.current = Date.now()
+    stableSegmentRef.current = final ? cleaned : `${stableSegmentRef.current} ${cleaned}`.slice(-800)
+    if (!final) return
+    const currentTalkMap = talkMapRef.current
+    const currentActiveIndex = activeIndexRef.current
+    const currentCovered = coveredRef.current
+    const currentFlowState = flowStateRef.current
+    setTranscript((current) => `${current} ${cleaned}`.trim())
+    const nextIndex = findActiveNode(currentTalkMap ?? { title: '', nodes: [] }, cleaned, currentActiveIndex)
+    if (nextIndex !== currentActiveIndex && currentTalkMap) {
+      setActiveIndex(nextIndex)
+      activeIndexRef.current = nextIndex
+      addEvent(event('TALK_NODE_CHANGED', undefined, currentFlowState, currentTalkMap.nodes[nextIndex]?.id))
+    }
+    const node = currentTalkMap?.nodes[currentActiveIndex]
+    if (node && semanticProgress(node, cleaned) >= 0.6) {
+      const nextCovered = new Set(currentCovered).add(node.id)
+      coveredRef.current = nextCovered
+      setCovered(nextCovered)
+      if (currentTalkMap) {
+        const updatedTalkMap = updateNodeStatuses(currentTalkMap, nextIndex, nextCovered)
+        talkMapRef.current = updatedTalkMap
+        setTalkMap(updatedTalkMap)
       }
     }
-    node.port.onmessage = (event: MessageEvent<Float32Array>) => { appendSamples(event.data) }
-    flushAudioRef.current = () => { if (pendingLength > 0) { sendChunk(pendingSamples.slice(0, pendingLength)); pendingSamples = new Float32Array(samplesPerChunk); pendingLength = 0 } }
-    source.connect(node); node.connect(silentGain); silentGain.connect(context.destination)
-    streamRef.current = stream; contextRef.current = context; sourceRef.current = source; nodeRef.current = node
+    const nextState = machineRef.current.observe({
+      silenceMs: 0,
+      fillerDensity: fillerDensity(cleaned),
+      repetitionScore: repetitionScore(cleaned),
+      semanticProgress: semanticProgress(node, cleaned),
+      activeNodeComplete: false,
+      meaningfulSpeechResumed: true,
+    })
+    if (currentFlowState === 'HESITATING' || currentFlowState === 'STUCK') addEvent(event('MEANINGFUL_SPEECH_RESUMED', undefined, nextState.state))
+    applyFlowDecision(nextState.state, nextState.changed)
+    setHint(null)
   }
 
-  const openVoice = () => { setError(''); setTranscript(''); setVoiceStage('idle'); setIsModalOpen(true) }
-  const beginListening = () => {
-    setVoiceStage('connecting')
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-    const apiPrefix = import.meta.env.VITE_API_BASE_URL ?? '/api/v1'
-    const socket = new WebSocket(`${protocol}//${window.location.host}${apiPrefix}/search/stream`)
-    socketRef.current = socket
-    socket.onopen = () => { socket.send(JSON.stringify({ type: 'start' })); startAudio(socket).catch(() => { cleanupAudio(); closeSocket(); setError('Microphone access is required to search by voice.'); setVoiceStage('error') }) }
-    socket.onmessage = (event) => { const message = JSON.parse(event.data) as { type: string; text?: string; final?: boolean; items?: SearchResult[]; message?: string }; if (message.type === 'listening') setVoiceStage('listening'); if (message.type === 'transcript' && message.text) { setTranscript(message.text); if (message.final) { flushAudioRef.current?.(); cleanupAudio(); socket.send(JSON.stringify({ type: 'stop' })); setVoiceStage('transcript') } } if (message.type === 'results') { setResults(message.items ?? []); setVoiceStage('searching'); closeModal() } if (message.type === 'error') { cleanupAudio(); closeSocket(); setError(message.message ?? 'Voice search is temporarily unavailable.'); setVoiceStage('error') } }
-    socket.onerror = () => { setError('Could not connect to voice search. Please try again.'); setVoiceStage('error') }
+  const createSpeakingSession = async (submitEvent: FormEvent) => {
+    submitEvent.preventDefault()
+    setError('')
+    setIsSubmitting(true)
+    try {
+      const created = await prepareSession(inputKind, inputText)
+      setSession(created)
+      setTalkMap(created.talk_map)
+      talkMapRef.current = created.talk_map
+      setActiveIndex(0)
+      activeIndexRef.current = 0
+      coveredRef.current = new Set()
+      setCovered(new Set())
+      setMode('map')
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'The session could not be prepared.')
+    } finally {
+      setIsSubmitting(false)
+    }
   }
-  const sendSearch = () => { if (!transcript.trim() || !socketRef.current) return; setVoiceStage('searching'); socketRef.current.send(JSON.stringify({ type: 'search', query: transcript })) }
-  const resetVoice = () => { cleanupAudio(); closeSocket(); setTranscript(''); setError(''); setVoiceStage('idle') }
 
-  const effectiveLogo = theme === 'dark' || (theme === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches) ? darkLogo : lightLogo
-  return <main className="app-shell"><header className="topbar"><a className="brand" href="/" aria-label="SuaraAI home"><img src={effectiveLogo} alt="SuaraAI" /></a><span className="topbar-note">Search by speaking</span></header><section className={`search-view ${results.length ? 'has-results' : ''}`}>{!results.length ? <div className="hero-copy"><p className="eyebrow">A quieter way to search</p><h1>Ask out loud.<br />Find your way.</h1><p className="hero-description">Speak naturally and let SuaraAI surface the ideas worth your time.</p></div> : <div className="results-heading"><p className="eyebrow">Your voice search</p><h1>{transcript || 'Your search results'}</h1><p className="result-count">{results.length} considered results</p></div>}<button className="voice-search" type="button" onClick={openVoice}><span className="voice-search-icon"><MicIcon /></span><span className="voice-search-copy"><strong>{results.length ? 'Ask another question' : 'Tap to speak'}</strong><small>No typing required</small></span><span className="voice-search-arrow"><ArrowIcon /></span></button>{results.length > 0 && <div className="results-list" aria-live="polite">{results.map((result, index) => <article className="result-item" key={`${result.url}-${index}`}>{result.image_url ? <img className="result-image" src={result.image_url} alt="" loading="lazy" /> : <span className="result-index">0{index + 1}</span>}<div><p className="result-source">{result.domain || 'Web result'} <span>·</span> {result.published_date || 'Source'}</p><h2><a href={result.url} target="_blank" rel="noreferrer">{result.title}</a></h2><p className="result-excerpt">{result.snippet}</p><a className="result-link" href={result.url} target="_blank" rel="noreferrer">{result.url}</a></div><ArrowIcon /></article>)}</div>}</section><footer className="footer"><span>Designed for considered questions.</span><label className="theme-picker">Theme <select value={theme} onChange={(event) => setTheme(event.target.value as ThemePreference)} aria-label="Choose color theme"><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select></label><span>SuaraAI / 2026</span></footer>{isModalOpen && <div className={`modal-backdrop ${isModalClosing ? 'is-closing' : ''}`} role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) closeModal() }}><section className="voice-modal" role="dialog" aria-modal="true" aria-labelledby="voice-modal-title"><button className="close-button" type="button" onClick={closeModal} aria-label="Close voice search"><CloseIcon /></button><p className="eyebrow">Voice search</p><h2 id="voice-modal-title">{voiceStage === 'idle' && 'What would you like to know?'}{voiceStage === 'connecting' && 'Connecting securely.'}{voiceStage === 'listening' && 'I’m listening.'}{voiceStage === 'transcript' && 'Here’s what I heard.'}{voiceStage === 'searching' && 'Searching the web.'}{voiceStage === 'error' && 'Something interrupted your search.'}</h2><div className={`voice-orb ${voiceStage}`} aria-hidden="true"><MicIcon /><div className="waveform">{[10, 18, 28, 16, 34, 20, 12].map((height, index) => <span key={index} style={{ '--bar-height': `${height}px` } as CSSProperties} />)}</div></div><p className="voice-status" aria-live="polite">{error || (voiceStage === 'idle' && 'SuaraAI keeps this preview focused on your question.') || (voiceStage === 'connecting' && 'Preparing a secure voice session…') || (voiceStage === 'listening' && (transcript || 'Say a question in your own words.')) || (voiceStage === 'transcript' && `“${transcript}”`) || (voiceStage === 'searching' && 'Finding the most useful sources…')}</p><div className="modal-actions">{voiceStage === 'idle' && <button className="text-action primary-action" type="button" onClick={beginListening}>Start listening <ArrowIcon /></button>}{voiceStage === 'connecting' && <span className="processing-label">Connecting</span>}{voiceStage === 'listening' && <button className="text-action primary-action" type="button" onClick={() => { flushAudioRef.current?.(); cleanupAudio(); socketRef.current?.send(JSON.stringify({ type: 'stop' })); setVoiceStage('transcript') }}>Done <ArrowIcon /></button>}{voiceStage === 'transcript' && <><button className="text-action" type="button" onClick={resetVoice}>Try again</button><button className="text-action primary-action" type="button" onClick={sendSearch}>Search <ArrowIcon /></button></>}{voiceStage === 'error' && <button className="text-action primary-action" type="button" onClick={resetVoice}>Try again <ArrowIcon /></button>}</div></section></div>}</main>
+  const requestCamera = async () => {
+    setError('')
+    stopMediaStream(mediaStream)
+    setMediaStream(null)
+    setCameraReady(false)
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true })
+      setMediaStream(stream)
+      setCameraReady(true)
+      setMode('ready')
+    } catch {
+      setError('Camera and microphone access are required. Please allow access and try again.')
+    }
+  }
+
+  const startRecording = async () => {
+    if (!mediaStream || !talkMap) return
+    setError('')
+    setTranscript('')
+    setPartialTranscript('')
+    setRecordingSeconds(0)
+    setStateEvents([event('MEDIA_READY')])
+    setFlowState('FLOWING')
+    flowStateRef.current = 'FLOWING'
+    setHint(null)
+    chunksRef.current = []
+    machineRef.current = new SpeakingFlowMachine()
+    lastSpeechAtRef.current = Date.now()
+    recorderRef.current = createVideoRecorder(mediaStream, (chunk) => chunksRef.current.push(chunk))
+    setMode('recording')
+    addEvent(event('RECORDING_STARTED'))
+    try {
+      const socket = await openAssemblySocket()
+      socketRef.current = socket
+      setIsListening(true)
+      setSttStatus('Live transcription connected')
+      socket.onmessage = (message) => {
+        const turn = parseSttMessage(String(message.data))
+        if (turn?.transcript) handleTurn(turn.transcript, turn.end_of_turn === true)
+      }
+      socket.onclose = () => {
+        setIsListening(false)
+        setSttStatus('Recording continues; live assistance is unavailable')
+        addEvent(event('STT_DISCONNECTED'))
+      }
+      audioRef.current = await connectAudioToSocket(mediaStream, socket)
+    } catch {
+      setIsListening(false)
+      setSttStatus('Recording continues; live assistance is unavailable')
+      addEvent(event('STT_DISCONNECTED', 'Speech transcription unavailable'))
+    }
+  }
+
+  const finishRecording = async () => {
+    audioRef.current?.flush()
+    audioRef.current?.close()
+    audioRef.current = null
+    const socket = socketRef.current
+    if (socket?.readyState === WebSocket.OPEN) {
+      await new Promise<void>((resolve) => {
+        const timeout = window.setTimeout(resolve, 750)
+        socket.addEventListener('close', () => {
+          window.clearTimeout(timeout)
+          resolve()
+        }, { once: true })
+        socket.send(JSON.stringify({ type: 'Terminate' }))
+      })
+    }
+    socket?.close()
+    socketRef.current = null
+    setIsListening(false)
+    const recorder = recorderRef.current
+    if (recorder?.state === 'recording') {
+      await new Promise<void>((resolve) => {
+        recorder.addEventListener('stop', () => resolve(), { once: true })
+        recorder.stop()
+      })
+    }
+    recorderRef.current = null
+    const nextUrl = URL.createObjectURL(new Blob(chunksRef.current, { type: 'video/webm' }))
+    setVideoUrl((current) => { if (current) URL.revokeObjectURL(current); return nextUrl })
+    addEvent(event('RECORDING_STOPPED'))
+    stopMediaStream(mediaStream)
+    setMediaStream(null)
+    setCameraReady(false)
+    setMode('preview')
+  }
+
+  const showManualHint = () => {
+    const currentTalkMap = talkMapRef.current
+    const currentActiveIndex = activeIndexRef.current
+    if (!currentTalkMap) return
+    const nextState = machineRef.current.observe({
+      silenceMs: 0,
+      fillerDensity: 0,
+      repetitionScore: 0,
+      semanticProgress: 0,
+      activeNodeComplete: false,
+      manualHintRequested: true,
+    })
+    addEvent(event('HINT_REQUESTED', undefined, 'STUCK', currentTalkMap.nodes[currentActiveIndex]?.id))
+    addEvent(event('HINT_SHOWN', 'manual', 'STUCK', currentTalkMap.nodes[currentActiveIndex]?.id))
+    applyFlowDecision(nextState.state, true)
+  }
+
+  const complete = async () => {
+    if (!session || !transcript.trim()) {
+      setError('Finish a spoken explanation before generating feedback.')
+      return
+    }
+    setIsSubmitting(true)
+    try {
+      const result = await completeSession(session, transcript, stateEvents)
+      setFeedback(result.feedback)
+      setMode('feedback')
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Feedback could not be generated.')
+    } finally {
+      setIsSubmitting(false)
+    }
+  }
+
+  const reset = () => {
+    stopMediaStream(mediaStream)
+    setMode('setup')
+    setSession(null)
+    setTalkMap(null)
+    setTranscript('')
+    setFeedback(null)
+    setVideoUrl(null)
+    setError('')
+    setQuestion('')
+    setAnswer('')
+    setSources([])
+    setCameraReady(false)
+    setMediaStream(null)
+  }
+
+  if (!session || !talkMap || mode === 'setup') {
+    return <Shell><SetupScreen inputKind={inputKind} setInputKind={setInputKind} inputText={inputText} setInputText={setInputText} onSubmit={createSpeakingSession} isSubmitting={isSubmitting} error={error} /></Shell>
+  }
+
+  return <Shell>
+    {mode === 'map' && <TalkMapScreen talkMap={talkMap} setTalkMap={setTalkMap} onContinue={async () => { try { const saved = await updateTalkMap({ ...session, talk_map: talkMap }); setSession(saved); setTalkMap(saved.talk_map); setMode('ready') } catch (cause) { setError(cause instanceof Error ? cause.message : 'Talk Map could not be saved.') } }} error={error} />}
+    {mode === 'ready' && <ReadyScreen videoRef={videoRef} cameraReady={cameraReady} onRequestCamera={requestCamera} onStart={startRecording} error={error} />}
+    {mode === 'recording' && <RecordingScreen videoRef={videoRef} talkMap={talkMap} activeIndex={activeIndex} flowState={flowState} hint={hint} transcript={partialTranscript} recordingSeconds={recordingSeconds} sttStatus={sttStatus} isListening={isListening} onHint={showManualHint} onStop={finishRecording} />}
+    {mode === 'preview' && <PreviewScreen videoUrl={videoUrl} transcript={transcript} onComplete={complete} onAgain={() => { setMode('ready'); void requestCamera() }} isSubmitting={isSubmitting} error={error} />}
+    {mode === 'feedback' && feedback && <FeedbackScreen feedback={feedback} videoUrl={videoUrl} session={session} documentStatus={documentStatus} setDocumentStatus={setDocumentStatus} question={question} setQuestion={setQuestion} answer={answer} sources={sources} onAsk={async () => { try { const result = await askKnowledge(session, question); setAnswer(result.answer); setSources(result.sources.map((source) => `${source.source_name}${source.page_number ? ` · page ${source.page_number}` : ''}`)) } catch (cause) { setError(cause instanceof Error ? cause.message : 'The question could not be answered.') } }} onUpload={async (file) => { try { const result = await uploadKnowledge(session, file); setDocumentStatus(`${result.source_name} indexed in ${result.chunk_count} chunks.`) } catch (cause) { setDocumentStatus(cause instanceof Error ? cause.message : 'The document could not be indexed.') } }} onReset={reset} error={error} />}
+  </Shell>
 }
+
+function Shell({ children }: { children: ReactNode }) {
+  return <main className="app-shell"><header className="topbar"><a className="brand" href="/" aria-label="SuaraAI home"><img src={lightLogo} alt="SuaraAI" /></a><span className="topbar-note">Speaking copilot</span><ThemePicker /></header>{children}<footer className="footer"><span>Keep your eyes on the lens.</span><span>SuaraAI / 2026</span></footer></main>
+}
+
+function SetupScreen(props: { inputKind: InputKind; setInputKind: (value: InputKind) => void; inputText: string; setInputText: (value: string) => void; onSubmit: (event: FormEvent) => void; isSubmitting: boolean; error: string }) {
+  return <section className="page setup-page"><p className="eyebrow">A quieter way to practice</p><h1>Explain your idea<br />in your own words.</h1><p className="lede">SuaraAI keeps you oriented while you speak English on camera. It gives a small cue only when you need a way forward.</p><form className="setup-form" onSubmit={props.onSubmit}><div className="input-tabs">{(['topic', 'notes', 'key_points'] as InputKind[]).map((kind) => <button key={kind} type="button" className={props.inputKind === kind ? 'is-selected' : ''} onClick={() => props.setInputKind(kind)}>{kind === 'key_points' ? 'Key points' : kind[0].toUpperCase() + kind.slice(1)}</button>)}</div><textarea value={props.inputText} onChange={(event) => props.setInputText(event.target.value)} placeholder="What do you want to explain?" rows={5} required /><button className="primary-button" disabled={props.isSubmitting}>{props.isSubmitting ? 'Preparing your Talk Map…' : 'Create speaking session'} <ArrowIcon /></button>{props.error && <p className="error-message" role="alert">{props.error}</p>}</form></section>
+}
+
+function TalkMapScreen({ talkMap, setTalkMap, onContinue, error }: { talkMap: TalkMap; setTalkMap: (map: TalkMap) => void; onContinue: () => void; error: string }) {
+  const moveNode = (index: number, direction: -1 | 1) => { const nodes = [...talkMap.nodes]; const target = index + direction; if (target < 0 || target >= nodes.length) return; [nodes[index], nodes[target]] = [nodes[target], nodes[index]]; setTalkMap({ ...talkMap, nodes }) }
+  return <section className="page map-page"><p className="eyebrow">Before you record</p><h1>Your Talk Map.</h1><p className="lede">A few ideas to guide you, never a script to read.</p><div className="map-list">{talkMap.nodes.map((node, index) => <article className="map-node" key={node.id}><span className="node-number">0{index + 1}</span><div><strong>{node.title}</strong><p>{node.semantic_summary}</p><small>{node.keywords.join(' · ')}</small></div><div className="node-controls"><button type="button" onClick={() => moveNode(index, -1)} aria-label="Move node up">↑</button><button type="button" onClick={() => moveNode(index, 1)} aria-label="Move node down">↓</button></div></article>)}</div><button className="primary-button" type="button" onClick={onContinue}>Check camera and mic <ArrowIcon /></button>{error && <p className="error-message" role="alert">{error}</p>}</section>
+}
+
+function ReadyScreen({ videoRef, cameraReady, onRequestCamera, onStart, error }: { videoRef: RefObject<HTMLVideoElement | null>; cameraReady: boolean; onRequestCamera: () => void; onStart: () => void; error: string }) {
+  return <section className="page ready-page"><p className="eyebrow">Camera readiness</p><h1>Settle in.<br />Then start.</h1><div className="camera-card"><video ref={videoRef} autoPlay muted playsInline />{!cameraReady && <div className="camera-placeholder"><MicIcon /><span>Your camera preview appears here.</span></div>}</div><div className="readiness-row"><span><i className={cameraReady ? 'ready-dot' : ''} />{cameraReady ? 'Camera + mic ready' : 'Permission required'}</span><button type="button" onClick={onRequestCamera}>{cameraReady ? 'Refresh preview' : 'Enable camera'}</button></div><button className="primary-button" type="button" disabled={!cameraReady} onClick={onStart}>Start recording <ArrowIcon /></button>{error && <p className="error-message" role="alert">{error}</p>}</section>
+}
+
+function RecordingScreen({ videoRef, talkMap, activeIndex, flowState, hint, transcript, recordingSeconds, sttStatus, isListening, onHint, onStop }: { videoRef: RefObject<HTMLVideoElement | null>; talkMap: TalkMap; activeIndex: number; flowState: FlowState; hint: ReturnType<typeof selectHint>; transcript: string; recordingSeconds: number; sttStatus: string; isListening: boolean; onHint: () => void; onStop: () => void }) {
+  const node = talkMap.nodes[activeIndex]
+  return <section className="recording-page"><div className="recording-video"><video ref={videoRef} autoPlay muted playsInline /><span className="recording-indicator"><i />REC {formatDuration(recordingSeconds)}</span><div className="recording-status">{isListening ? 'Live assistance on' : sttStatus}</div>{hint && <aside className="hint-card" aria-live="polite"><span className="hint-label">{hint.level === 1 ? 'A small nudge' : 'A way forward'}</span>{hint.level === 1 ? <strong>{hint.keyword}</strong> : <><strong>{hint.starter}</strong><p>{hint.nextIdea}</p></>}</aside>}<div className="recording-controls"><button type="button" onClick={onHint} aria-label="Show a hint"><span>?</span> Hint</button><button type="button" className="stop-button" onClick={onStop}>Stop recording</button></div></div><div className="recording-map"><p className="eyebrow">Current idea</p><h2>{node?.title}</h2><p>{node?.intent}</p><div className="mini-map">{talkMap.nodes.map((item) => <span key={item.id} className={item.status} />)}</div><p className="flow-label">{flowState === 'FLOWING' ? 'You are in your flow.' : flowState === 'RECOVERED' ? 'Good, keep going.' : 'A small cue is ready if you need it.'}</p>{transcript && <p className="live-transcript">{transcript}</p>}</div></section>
+}
+
+function PreviewScreen({ videoUrl, transcript, onComplete, onAgain, isSubmitting, error }: { videoUrl: string | null; transcript: string; onComplete: () => void; onAgain: () => void; isSubmitting: boolean; error: string }) {
+  return <section className="page preview-page"><p className="eyebrow">Take complete</p><h1>That’s your take.</h1><p className="lede">Watch it back, then get one useful next step.</p>{videoUrl && <video className="preview-video" src={videoUrl} controls playsInline />}<p className="transcript-preview">{transcript || 'No final transcript was captured.'}</p><div className="button-row"><button type="button" onClick={onAgain}>Record again</button><button className="primary-button" type="button" disabled={isSubmitting || !transcript} onClick={onComplete}>{isSubmitting ? 'Reflecting…' : 'Get speaking feedback'} <ArrowIcon /></button></div>{error && <p className="error-message" role="alert">{error}</p>}</section>
+}
+
+function FeedbackScreen(props: { feedback: Feedback; videoUrl: string | null; session: Session; documentStatus: string; setDocumentStatus: (value: string) => void; question: string; setQuestion: (value: string) => void; answer: string; sources: string[]; onAsk: () => void; onUpload: (file: File) => void; onReset: () => void; error: string }) {
+  return <section className="page feedback-page"><p className="eyebrow">Your practice note</p><h1>Keep this.<br />Try that next.</h1><p className="lede">{props.feedback.summary}</p><div className="feedback-grid"><FeedbackList title="What worked" items={props.feedback.strengths} /><FeedbackList title="Try next" items={props.feedback.improvements} /><FeedbackList title="Useful phrases" items={props.feedback.examples} /></div><div className="next-practice"><span className="eyebrow">Next practice</span><p>{props.feedback.next_practice}</p></div>{props.videoUrl && <a className="download-link" href={props.videoUrl} download="suaraai-recording.webm">Download your recording <ArrowIcon /></a>}<div className="knowledge-panel"><p className="eyebrow">Optional materials</p><h2>Ask about your notes.</h2><label className="upload-label">Add PDF or PPTX<input type="file" accept="application/pdf,.pdf,.pptx,application/vnd.openxmlformats-officedocument.presentationml.presentation" onChange={(event) => { const file = event.target.files?.[0]; if (file) props.onUpload(file) }} /></label>{props.documentStatus && <p className="small-status">{props.documentStatus}</p>}<form onSubmit={(event) => { event.preventDefault(); props.onAsk() }}><input value={props.question} onChange={(event) => props.setQuestion(event.target.value)} placeholder="Ask a question about your materials" /><button type="submit">Ask <ArrowIcon /></button></form>{props.answer && <div className="answer"><p>{props.answer}</p>{props.sources.length > 0 && <small>Sources: {props.sources.join(', ')}</small>}</div>}</div><button className="text-action" type="button" onClick={props.onReset}>Start a new session <ArrowIcon /></button>{props.error && <p className="error-message" role="alert">{props.error}</p>}</section>
+}
+
+function FeedbackList({ title, items }: { title: string; items: string[] }) { return <div className="feedback-list"><h2>{title}</h2><ul>{items.map((item) => <li key={item}>{item}</li>)}</ul></div> }
+function formatDuration(seconds: number) { return `${String(Math.floor(seconds / 60)).padStart(2, '0')}:${String(Math.floor(seconds % 60)).padStart(2, '0')}` }
 
 export default App

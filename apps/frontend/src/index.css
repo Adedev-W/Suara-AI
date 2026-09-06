@@ -1,7 +1,23 @@
-:root { --ink:#24231f; --muted:#85827a; --accent:#bd5b3e; --line:rgba(36,35,31,.13); --glass-strong:rgba(255,255,255,.7); --surface:#efeee9; --sans:-apple-system,BlinkMacSystemFont,"Helvetica Neue","Segoe UI",sans-serif; --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; color:var(--muted); background:var(--surface); font-family:var(--sans); font-synthesis:none; text-rendering:optimizeLegibility; -webkit-font-smoothing:antialiased; }
-:root[data-theme="dark"] { --ink:#f5f3ef; --muted:#a8a39a; --accent:#ff8060; --line:rgba(255,255,255,.14); --glass-strong:rgba(255,255,255,.12); --surface:#171614; color-scheme:dark; }
-@media (prefers-color-scheme:dark) { :root:not([data-theme="light"]) { --ink:#f5f3ef; --muted:#a8a39a; --accent:#ff8060; --line:rgba(255,255,255,.14); --glass-strong:rgba(255,255,255,.12); --surface:#171614; color-scheme:dark; } }
+:root {
+  --ink: #24231f;
+  --muted: #77736a;
+  --accent: #bd5b3e;
+  --line: rgba(36, 35, 31, .14);
+  --surface: #efeee9;
+  --panel: rgba(255, 255, 255, .72);
+  --sans: 'Google Sans', -apple-system, BlinkMacSystemFont, 'Helvetica Neue', sans-serif;
+  color: var(--muted);
+  background: var(--surface);
+  font-family: var(--sans);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+}
+:root[data-theme="dark"] { --ink: #f5f3ef; --muted: #a8a39a; --accent: #ff8060; --line: rgba(255,255,255,.14); --surface: #171614; --panel: rgba(255,255,255,.11); color-scheme: dark; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --ink:#f5f3ef; --muted:#a8a39a; --accent:#ff8060; --line:rgba(255,255,255,.14); --surface:#171614; --panel:rgba(255,255,255,.11); color-scheme:dark; } }
 * { box-sizing: border-box; }
-body { margin:0; min-width:320px; min-height:100vh; background:var(--surface); }
+body { margin: 0; min-width: 320px; min-height: 100vh; background: var(--surface); }
+button, input, textarea, select { font: inherit; }
 button, a { -webkit-tap-highlight-color: transparent; }
-body, button, input, select, textarea { font-family:'Google Sans', -apple-system, BlinkMacSystemFont, 'Helvetica Neue', 'Segoe UI', sans-serif; }
+button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
