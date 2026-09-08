@@ -1,7 +1,9 @@
 import asyncio
+import logging
 from unittest.mock import patch
 
 import httpx
+import pytest
 from fastapi.testclient import TestClient
 
 from suaraai.infrastructure.llm_gateway import AssemblyAILlmGateway, LlmGatewayError
@@ -61,11 +63,16 @@ def test_stt_token_reports_missing_provider_configuration() -> None:
     assert response.status_code == 503
 
 
-def test_session_prepare_exposes_safe_llm_gateway_error_detail() -> None:
+def test_session_prepare_logs_diagnostic_llm_gateway_error(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     async def fail_generation(*_: object, **__: object) -> None:
         raise LlmGatewayError(
-            "LLM Gateway returned HTTP 400 (provider code 400): "
-            "Invalid response_format [request_id=req-123]"
+            "LLM Gateway returned HTTP 400: Invalid request",
+            diagnostic_message=(
+                "LLM Gateway returned HTTP 400: Invalid request; "
+                "provider response contains the complete validation detail"
+            ),
         )
 
     async def make_request() -> httpx.Response:
@@ -77,13 +84,11 @@ def test_session_prepare_exposes_safe_llm_gateway_error_detail() -> None:
                 json={"input_kind": "topic", "input_text": "How a bicycle works"},
             )
 
-    with patch.object(AssemblyAILlmGateway, "generate", new=fail_generation):
+    with caplog.at_level(logging.WARNING), patch.object(
+        AssemblyAILlmGateway, "generate", new=fail_generation
+    ):
         response = asyncio.run(make_request())
 
     assert response.status_code == 502
-    assert response.json() == {
-        "detail": (
-            "LLM Gateway returned HTTP 400 (provider code 400): "
-            "Invalid response_format [request_id=req-123]"
-        )
-    }
+    assert response.json() == {"detail": "LLM Gateway returned HTTP 400: Invalid request"}
+    assert "complete validation detail" in caplog.text

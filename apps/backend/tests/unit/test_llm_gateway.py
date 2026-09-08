@@ -63,6 +63,44 @@ def test_gateway_error_includes_provider_status_and_message(status_code: int) ->
     )
 
 
+def test_gateway_error_keeps_full_provider_response_for_diagnostics() -> None:
+    provider_message = "Invalid response_format: " + ("details " * 100)
+    response = _response(
+        400,
+        {
+            "request_id": "req-long",
+            "error": {
+                "code": 400,
+                "message": provider_message,
+                "param": "response_format",
+                "type": "invalid_request_error",
+                "token": "do-not-log-this",
+            },
+        },
+    )
+    gateway = AssemblyAILlmGateway(
+        api_key="test-key",
+        model="gemini-2.5-flash-lite",
+        base_url="https://llm-gateway.assemblyai.com/v1",
+    )
+
+    with patch(
+        "suaraai.infrastructure.llm_gateway.httpx.AsyncClient",
+        return_value=_FakeAsyncClient(response),
+    ), pytest.raises(LlmGatewayError) as error:
+        asyncio.run(gateway._completion(system="system", user="user"))
+
+    assert len(str(error.value)) < len(error.value.diagnostic_message)
+    assert '"details details details' not in str(error.value)
+    assert error.value.diagnostic_message.startswith(
+        "LLM Gateway returned HTTP 400 (provider code 400): "
+    )
+    assert " ".join(provider_message.split()) in error.value.diagnostic_message
+    assert '"param": "response_format"' in error.value.diagnostic_message
+    assert '"type": "invalid_request_error"' in error.value.diagnostic_message
+    assert '"token": "[redacted]"' in error.value.diagnostic_message
+
+
 def test_gateway_error_distinguishes_timeout() -> None:
     message = _gateway_error(httpx.TimeoutException("upstream timed out"))
 

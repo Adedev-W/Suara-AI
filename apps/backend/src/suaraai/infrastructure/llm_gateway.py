@@ -11,12 +11,17 @@ from suaraai.domain.copilot import Feedback, InputKind, RetrievedChunk, TalkMap,
 
 
 class LlmGatewayError(RuntimeError):
-    pass
+    def __init__(self, message: str, *, diagnostic_message: str | None = None) -> None:
+        super().__init__(message)
+        self.diagnostic_message = diagnostic_message or message
 
 
 _MAX_PROVIDER_ERROR_LENGTH = 400
+_SENSITIVE_ERROR_KEYS = frozenset(
+    {"authorization", "api_key", "api-key", "token", "secret", "password"}
+)
 _SENSITIVE_ERROR_PATTERN = re.compile(
-    r"(?i)\b(authorization|api[_ -]?key|token|secret)\b\s*[:=]\s*\S+"
+    r"(?i)\b(authorization|api[_ -]?key|token|secret|password)\b\s*[:=]\s*\S+"
 )
 
 
@@ -139,7 +144,10 @@ class AssemblyAILlmGateway:
                 f"LLM Gateway request timed out after {self._timeout:g} seconds"
             ) from exc
         except httpx.HTTPStatusError as exc:
-            raise LlmGatewayError(_format_provider_http_error(exc.response)) from exc
+            public_message, diagnostic_message = _format_provider_http_error(exc.response)
+            raise LlmGatewayError(
+                public_message, diagnostic_message=diagnostic_message
+            ) from exc
         except httpx.RequestError as exc:
             raise LlmGatewayError(
                 f"LLM Gateway network error ({type(exc).__name__})"
@@ -232,7 +240,7 @@ FEEDBACK_SCHEMA: dict[str, object] = {
 }
 
 
-def _format_provider_http_error(response: httpx.Response) -> str:
+def _format_provider_http_error(response: httpx.Response) -> tuple[str, str]:
     provider_code: str | None = None
     provider_message: str | None = None
     request_id: str | None = None
@@ -256,7 +264,18 @@ def _format_provider_http_error(response: httpx.Response) -> str:
         detail += f": {provider_message}"
     if request_id is not None:
         detail += f" [request_id={request_id}]"
-    return detail
+
+    if isinstance(payload, dict):
+        provider_details = json.dumps(
+            _redact_provider_payload(payload), ensure_ascii=False, sort_keys=True
+        )
+    else:
+        provider_details = _sanitize_provider_message(response.text, max_length=None)
+    diagnostic_detail = (
+        f"{detail} [provider_response="
+        f"{provider_details}]"
+    )
+    return detail, diagnostic_detail
 
 
 def _request_id(payload: dict[str, object]) -> str | None:
@@ -272,10 +291,34 @@ def _error_code(value: object) -> str | None:
     return None
 
 
-def _sanitize_provider_message(value: str) -> str:
+def _sanitize_provider_message(
+    value: str, *, max_length: int | None = _MAX_PROVIDER_ERROR_LENGTH
+) -> str:
     normalized = " ".join(value.split())
     redacted = _SENSITIVE_ERROR_PATTERN.sub(r"\1=[redacted]", normalized)
-    return redacted[:_MAX_PROVIDER_ERROR_LENGTH]
+    if max_length is None:
+        return redacted
+    return redacted[:max_length]
+
+
+def _redact_provider_payload(value: object) -> object:
+    if isinstance(value, dict):
+        redacted: dict[object, object] = {}
+        for key, item in value.items():
+            normalized_key = (
+                re.sub(r"[\s-]+", "_", key.lower()) if isinstance(key, str) else ""
+            )
+            redacted[key] = (
+                "[redacted]"
+                if normalized_key in _SENSITIVE_ERROR_KEYS
+                else _redact_provider_payload(item)
+            )
+        return redacted
+    if isinstance(value, list):
+        return [_redact_provider_payload(item) for item in value]
+    if isinstance(value, str):
+        return _sanitize_provider_message(value, max_length=None)
+    return value
 
 
 def _with_request_id(message: str, request_id: str | None) -> str:
