@@ -14,7 +14,7 @@ class Settings:
     assemblyai_token_ttl_seconds: int = 60
     assemblyai_speech_model: str = "universal-3-5-pro"
     llm_gateway_base_url: str = "https://llm-gateway.assemblyai.com/v1"
-    llm_model: str = "qwen3.5-4b-32k-fast"
+    llm_model: str = "qwen3-32B"
     llm_fallback_model: str | None = "gemini-2.5-flash-lite"
     embedding_model: str = "BAAI/bge-small-en-v1.5"
     max_document_size_bytes: int = 10 * 1024 * 1024

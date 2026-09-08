@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Sequence
 from typing import cast
 
@@ -11,6 +12,12 @@ from suaraai.domain.copilot import Feedback, InputKind, RetrievedChunk, TalkMap,
 
 class LlmGatewayError(RuntimeError):
     pass
+
+
+_MAX_PROVIDER_ERROR_LENGTH = 400
+_SENSITIVE_ERROR_PATTERN = re.compile(
+    r"(?i)\b(authorization|api[_ -]?key|token|secret)\b\s*[:=]\s*\S+"
+)
 
 
 class AssemblyAILlmGateway:
@@ -127,20 +134,45 @@ class AssemblyAILlmGateway:
                     f"{self._base_url}/chat/completions", headers=headers, json=body
                 )
                 response.raise_for_status()
+        except httpx.TimeoutException as exc:
+            raise LlmGatewayError(
+                f"LLM Gateway request timed out after {self._timeout:g} seconds"
+            ) from exc
+        except httpx.HTTPStatusError as exc:
+            raise LlmGatewayError(_format_provider_http_error(exc.response)) from exc
+        except httpx.RequestError as exc:
+            raise LlmGatewayError(
+                f"LLM Gateway network error ({type(exc).__name__})"
+            ) from exc
         except httpx.HTTPError as exc:
-            raise LlmGatewayError("LLM Gateway request failed") from exc
-        data = response.json()
+            raise LlmGatewayError(
+                f"LLM Gateway HTTP client error ({type(exc).__name__})"
+            ) from exc
+        try:
+            data = response.json()
+        except ValueError as exc:
+            raise LlmGatewayError("LLM Gateway returned a non-JSON success response") from exc
         if not isinstance(data, dict):
             raise LlmGatewayError("LLM Gateway returned an invalid response")
         choices = data.get("choices")
         if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
-            raise LlmGatewayError("LLM Gateway returned no completion")
+            raise LlmGatewayError(
+                _with_request_id("LLM Gateway returned no completion", _request_id(data))
+            )
         message = choices[0].get("message")
         if not isinstance(message, dict):
-            raise LlmGatewayError("LLM Gateway completion has no text content")
+            raise LlmGatewayError(
+                _with_request_id(
+                    "LLM Gateway completion has no message", _request_id(data)
+                )
+            )
         content = message.get("content")
         if not isinstance(content, str):
-            raise LlmGatewayError("LLM Gateway completion has no text content")
+            raise LlmGatewayError(
+                _with_request_id(
+                    "LLM Gateway completion has no text content", _request_id(data)
+                )
+            )
         return content
 
 
@@ -198,6 +230,58 @@ FEEDBACK_SCHEMA: dict[str, object] = {
     "required": ["summary", "strengths", "improvements", "examples", "next_practice"],
     "additionalProperties": False,
 }
+
+
+def _format_provider_http_error(response: httpx.Response) -> str:
+    provider_code: str | None = None
+    provider_message: str | None = None
+    request_id: str | None = None
+    try:
+        payload = response.json()
+    except ValueError:
+        payload = None
+    if isinstance(payload, dict):
+        request_id = _request_id(payload)
+        raw_error = payload.get("error")
+        if isinstance(raw_error, dict):
+            provider_code = _error_code(raw_error.get("code"))
+            raw_message = raw_error.get("message")
+            if isinstance(raw_message, str) and raw_message.strip():
+                provider_message = _sanitize_provider_message(raw_message)
+
+    detail = f"LLM Gateway returned HTTP {response.status_code}"
+    if provider_code is not None:
+        detail += f" (provider code {provider_code})"
+    if provider_message is not None:
+        detail += f": {provider_message}"
+    if request_id is not None:
+        detail += f" [request_id={request_id}]"
+    return detail
+
+
+def _request_id(payload: dict[str, object]) -> str | None:
+    value = payload.get("request_id")
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return None
+
+
+def _error_code(value: object) -> str | None:
+    if isinstance(value, (int, str)) and not isinstance(value, bool):
+        return str(value)
+    return None
+
+
+def _sanitize_provider_message(value: str) -> str:
+    normalized = " ".join(value.split())
+    redacted = _SENSITIVE_ERROR_PATTERN.sub(r"\1=[redacted]", normalized)
+    return redacted[:_MAX_PROVIDER_ERROR_LENGTH]
+
+
+def _with_request_id(message: str, request_id: str | None) -> str:
+    if request_id is None:
+        return message
+    return f"{message} [request_id={request_id}]"
 
 
 def _parse_talk_map(payload: dict[str, object]) -> TalkMap:

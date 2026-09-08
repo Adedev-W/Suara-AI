@@ -1,5 +1,10 @@
+import asyncio
+from unittest.mock import patch
+
+import httpx
 from fastapi.testclient import TestClient
 
+from suaraai.infrastructure.llm_gateway import AssemblyAILlmGateway, LlmGatewayError
 from suaraai.infrastructure.settings import Settings
 from suaraai.main import create_app
 
@@ -54,3 +59,31 @@ def test_stt_token_reports_missing_provider_configuration() -> None:
     response = client.post("/api/v1/stt/token")
 
     assert response.status_code == 503
+
+
+def test_session_prepare_exposes_safe_llm_gateway_error_detail() -> None:
+    async def fail_generation(*_: object, **__: object) -> None:
+        raise LlmGatewayError(
+            "LLM Gateway returned HTTP 400 (provider code 400): "
+            "Invalid response_format [request_id=req-123]"
+        )
+
+    async def make_request() -> httpx.Response:
+        application = create_app(Settings(database_url=None, assemblyai_api_key="test-key"))
+        transport = httpx.ASGITransport(app=application)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            return await client.post(
+                "/api/v1/session/prepare",
+                json={"input_kind": "topic", "input_text": "How a bicycle works"},
+            )
+
+    with patch.object(AssemblyAILlmGateway, "generate", new=fail_generation):
+        response = asyncio.run(make_request())
+
+    assert response.status_code == 502
+    assert response.json() == {
+        "detail": (
+            "LLM Gateway returned HTTP 400 (provider code 400): "
+            "Invalid response_format [request_id=req-123]"
+        )
+    }

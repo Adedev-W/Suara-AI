@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from uuid import UUID
 
 from fastapi import APIRouter, Header, HTTPException, status
@@ -21,6 +22,8 @@ from suaraai.presentation.api.schemas import (
     UpdateTalkMapRequest,
 )
 
+logger = logging.getLogger(__name__)
+
 
 def create_session_router(
     prepare_session: PrepareSession,
@@ -36,7 +39,8 @@ def create_session_router(
         except SessionInputError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         except LlmGatewayError as exc:
-            raise HTTPException(status_code=502, detail="Speaking plan generation failed") from exc
+            logger.warning("Speaking plan generation failed: %s", exc)
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
         return SessionResponse.from_domain(session)
 
     @router.patch("/{session_id}/talk-map", response_model=SessionResponse)
@@ -73,8 +77,9 @@ def create_session_router(
         except SessionNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         except LlmGatewayError as exc:
+            logger.warning("Speaking feedback generation failed: %s", exc)
             raise HTTPException(
-                status_code=502, detail="Speaking feedback generation failed"
+                status_code=502, detail=str(exc)
             ) from exc
         return CompleteSessionResponse(
             session_id=parsed_session_id,
