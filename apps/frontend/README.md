@@ -35,5 +35,6 @@ locally for playback and download.
 Final transcript turns drive Talk Map progress and automatic assistance. A
 deterministic cue appears immediately for hesitation or stuck states; when the
 backend has an LLM key, a bounded contextual rescue hint is requested only for
-`STUCK` or a manual Hint action. Late or failed hint responses never stop the
-recording, and the deterministic cue remains as the fallback.
+`STUCK` or a manual Hint action. Only one automatic request is sent for each
+stuck episode. Late or failed hint responses never stop the recording, and the
+deterministic cue remains as the fallback.

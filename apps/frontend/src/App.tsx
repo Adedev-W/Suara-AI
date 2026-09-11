@@ -12,6 +12,7 @@ import { openAssemblySocket, parseSttMessage } from './lib/stt'
 type AppMode = 'setup' | 'map' | 'ready' | 'recording' | 'preview' | 'feedback'
 const SECTION_GRACE_MS = 2000
 const MAX_FINAL_TRANSCRIPT_WINDOW_CHARS = 2400
+const MANUAL_HINT_COOLDOWN_MS = 1500
 
 function MicIcon() { return <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="3" width="8" height="12" rx="4" /><path d="M5 11a7 7 0 0 0 14 0M12 18v3M9 21h6" /></svg> }
 function ArrowIcon() { return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h13M13 6l6 6-6 6" /></svg> }
@@ -57,6 +58,9 @@ function App() {
   const nodeEvidenceRef = useRef<Map<string, number>>(new Map())
   const sectionGraceUntilRef = useRef(0)
   const hintRequestVersionRef = useRef(0)
+  const hintEpisodeKeyRef = useRef<string | null>(null)
+  const hintRequestInFlightRef = useRef(false)
+  const lastHintRequestAtRef = useRef(0)
   const previousHintsRef = useRef<string[]>([])
   const flowStateRef = useRef<FlowState>('FLOWING')
 
@@ -110,13 +114,22 @@ function App() {
     return recentFinalTranscriptRef.current
   }
 
-  const requestContextualHint = async () => {
+  const requestContextualHint = async (manual = false) => {
     const currentSession = session
     const currentTalkMap = talkMapRef.current
     const currentActiveIndex = activeIndexRef.current
     if (!currentSession || !currentTalkMap) return
 
     const currentNode = currentTalkMap.nodes[currentActiveIndex]
+    const episodeKey = `${currentSession.session_id}:${currentNode?.id ?? currentActiveIndex}`
+    const now = Date.now()
+    if (hintRequestInFlightRef.current) return
+    if (!manual && hintEpisodeKeyRef.current === episodeKey) return
+    if (manual && now - lastHintRequestAtRef.current < MANUAL_HINT_COOLDOWN_MS) return
+
+    hintEpisodeKeyRef.current = episodeKey
+    hintRequestInFlightRef.current = true
+    lastHintRequestAtRef.current = now
     const fallback = selectHint(
       currentTalkMap,
       currentActiveIndex,
@@ -130,6 +143,7 @@ function App() {
     }
 
     const requestVersion = ++hintRequestVersionRef.current
+    addEvent(event('HINT_REQUESTED', manual ? 'manual' : 'automatic', 'STUCK', currentNode?.id))
     try {
       const generated = await requestRealtimeHint(currentSession, {
         activeIndex: currentActiveIndex,
@@ -147,6 +161,8 @@ function App() {
       addEvent(event('HINT_SHOWN', generated.source ?? 'ai', 'STUCK', currentNode?.id))
     } catch {
       addEvent(event('HINT_GENERATION_FAILED', 'deterministic fallback retained', 'STUCK', currentNode?.id))
+    } finally {
+      hintRequestInFlightRef.current = false
     }
   }
 
@@ -186,7 +202,7 @@ function App() {
       coveredConceptsForNode(currentNode),
     )
     if (nextState === 'STUCK' && (changed || forceRescue)) {
-      void requestContextualHint()
+      void requestContextualHint(forceRescue)
     } else {
       rememberHint(deterministicHint)
       setHint(deterministicHint)
@@ -264,7 +280,10 @@ function App() {
       meaningfulSpeechResumed: true,
       recentlyCompletedSection: sectionCompleted,
     })
-    if (currentFlowState === 'HESITATING' || currentFlowState === 'STUCK') addEvent(event('MEANINGFUL_SPEECH_RESUMED', undefined, nextState.state))
+    if (currentFlowState === 'HESITATING' || currentFlowState === 'STUCK') {
+      hintEpisodeKeyRef.current = null
+      addEvent(event('MEANINGFUL_SPEECH_RESUMED', undefined, nextState.state))
+    }
     applyFlowDecision(nextState.state, nextState.changed)
   }
 
@@ -286,6 +305,9 @@ function App() {
       recentFinalTranscriptRef.current = ''
       sectionGraceUntilRef.current = 0
       hintRequestVersionRef.current += 1
+      hintEpisodeKeyRef.current = null
+      hintRequestInFlightRef.current = false
+      lastHintRequestAtRef.current = 0
       previousHintsRef.current = []
       setMode('map')
     } catch (cause) {
@@ -325,6 +347,9 @@ function App() {
     recentFinalTranscriptRef.current = ''
     sectionGraceUntilRef.current = 0
     hintRequestVersionRef.current += 1
+    hintEpisodeKeyRef.current = null
+    hintRequestInFlightRef.current = false
+    lastHintRequestAtRef.current = 0
     previousHintsRef.current = []
     setTranscript('')
     setPartialTranscript('')
@@ -432,6 +457,9 @@ function App() {
 
   const reset = () => {
     hintRequestVersionRef.current += 1
+    hintEpisodeKeyRef.current = null
+    hintRequestInFlightRef.current = false
+    lastHintRequestAtRef.current = 0
     stopMediaStream(mediaStream)
     setMode('setup')
     setSession(null)

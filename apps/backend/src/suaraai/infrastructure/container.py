@@ -20,6 +20,7 @@ from suaraai.infrastructure.assemblyai import AssemblyAISpeechTokenService
 from suaraai.infrastructure.database import PostgresSessionRepository
 from suaraai.infrastructure.documents import LocalDocumentParser
 from suaraai.infrastructure.embeddings import LocalEmbeddingService
+from suaraai.infrastructure.hint_generator import ResilientHintGenerator
 from suaraai.infrastructure.llm_gateway import AssemblyAILlmGateway
 from suaraai.infrastructure.settings import Settings
 
@@ -55,7 +56,11 @@ def create_services(
     feedback_generator: FeedbackGenerator = (
         gateway if settings.assemblyai_api_key else DeterministicFeedbackGenerator()
     )
-    hint_generator = gateway if settings.assemblyai_api_key else DeterministicHintGenerator()
+    hint_generator = (
+        ResilientHintGenerator(gateway, DeterministicHintGenerator())
+        if settings.assemblyai_api_key
+        else DeterministicHintGenerator()
+    )
     answerer: QuestionAnswerer = gateway
     embedding_service = LocalEmbeddingService(settings.embedding_model)
     return ApplicationServices(

@@ -100,7 +100,16 @@ class StuckDetector:
             self.state = FlowState.FLOWING
             return self.state
 
+        if self.state == FlowState.STUCK:
+            return self.state
+
         low_progress = observation.semantic_progress < 0.35
+        if self.state == FlowState.HESITATING and not (
+            observation.silence_ms > self._stuck_silence_ms
+            and observation.active_node_complete is False
+            and low_progress
+        ):
+            return self.state
         if (
             observation.silence_ms > self._stuck_silence_ms
             and observation.active_node_complete is False

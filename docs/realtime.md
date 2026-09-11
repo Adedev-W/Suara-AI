@@ -22,10 +22,13 @@ The assistance state machine is intentionally deterministic:
   starter phrase and next idea.
 - `RECOVERED`: meaningful speech resumes after hesitation or a stuck state.
 
-After recovery, a 6 second cooldown suppresses repeated cues. A manual Hint
-button goes directly to the strongest available cue. Talk Map matching advances
-only when the next node's keyword score clears the current node by a margin, so
-normal pauses do not cause aggressive section changes.
+An intervention state remains stable during continued silence; it does not
+flicker back to `FLOWING` on a short timer tick. It changes to `RECOVERED` only
+when meaningful speech resumes. After recovery, a 6 second cooldown suppresses
+repeated cues. A manual Hint button goes directly to the strongest available
+cue. Talk Map matching advances only when the next node's keyword score clears
+the current node by a margin, so normal pauses do not cause aggressive section
+changes.
 
 The browser keeps final turns in a bounded rolling window and accumulates
 covered concepts for the active Talk Map node. A node requires evidence across
@@ -35,11 +38,13 @@ transition grace period suppresses an immediate repeat cue after completion.
 When the state enters `STUCK`, the browser shows the deterministic Talk Map cue
 immediately and requests `POST /api/v1/session/{id}/hint` in the background. The
 backend uses the configured LLM gateway when available and returns a short
-structured cue. If the request fails, the deterministic cue remains visible;
-recording and STT are not dependent on this request. The browser aborts a hint
-request after four seconds so a slow provider response cannot replace a cue for
-an outdated speaking moment. The request is an explicit extension of the PRD's
-pre-recording-only LLM scope; the deterministic path remains the MVP fallback.
+structured cue. If the provider fails, the backend returns a deterministic cue
+with `source="deterministic"` and logs a sanitized diagnostic; recording and STT
+are not dependent on this request. The browser sends at most one automatic hint
+request per stuck episode and aborts a request after four seconds so a slow
+provider response cannot replace a cue for an outdated speaking moment. The
+request is an explicit extension of the PRD's pre-recording-only LLM scope; the
+deterministic path remains the MVP fallback.
 
 The backend receives only the bounded recent final-transcript window needed for
 a rescue hint during recording. The complete transcript and structured state

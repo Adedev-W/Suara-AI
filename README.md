@@ -138,9 +138,11 @@ audio assumptions are documented in [docs/realtime.md](docs/realtime.md).
 The hint route receives only a bounded recent final-transcript window and Talk
 Map context. The frontend keeps a deterministic hint visible while an optional
 LLM rescue response is pending, and discards responses that arrive after speech
-or a Talk Map transition. This event-driven LLM rescue is an explicit extension
-to the PRD's original pre-recording-only LLM scope; the deterministic fallback
-continues to provide the PRD-compatible behavior.
+or a Talk Map transition. Provider failures on this optional route degrade to a
+200 deterministic response with a sanitized diagnostic in server logs. This
+event-driven LLM rescue is an explicit extension to the PRD's original
+pre-recording-only LLM scope; the deterministic fallback continues to provide
+the PRD-compatible behavior.
 
 ## Quality checks
 

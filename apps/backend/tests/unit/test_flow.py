@@ -40,6 +40,23 @@ def test_stuck_detector_uses_hesitation_then_stuck_then_recovery() -> None:
     assert detector.observe(_observation(), now_ms=4000) == FlowState.FLOWING
 
 
+def test_stuck_detector_does_not_flicker_during_continued_silence() -> None:
+    detector = StuckDetector()
+
+    assert (
+        detector.observe(_observation(silence_ms=1800, semantic_progress=0.1), now_ms=1800)
+        == FlowState.HESITATING
+    )
+    assert (
+        detector.observe(_observation(silence_ms=3001, semantic_progress=0.1), now_ms=3001)
+        == FlowState.STUCK
+    )
+    assert (
+        detector.observe(_observation(silence_ms=3251, semantic_progress=0.1), now_ms=3251)
+        == FlowState.STUCK
+    )
+
+
 def test_talk_map_matcher_advances_only_when_next_node_is_clearer() -> None:
     talk_map = TalkMap(
         title="Explain APIs",

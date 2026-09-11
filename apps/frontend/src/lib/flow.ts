@@ -50,6 +50,15 @@ export class SpeakingFlowMachine {
       this.current = 'FLOWING'
     } else {
       const lowProgress = observation.semanticProgress < 0.35
+      if (this.current === 'STUCK') {
+        return { state: this.current, changed: false, hint: null }
+      }
+      if (
+        this.current === 'HESITATING'
+        && !(observation.silenceMs > this.stuckSilenceMs && !observation.activeNodeComplete && lowProgress)
+      ) {
+        return { state: this.current, changed: false, hint: null }
+      }
       if (observation.silenceMs > this.stuckSilenceMs && !observation.activeNodeComplete && lowProgress) {
         this.current = 'STUCK'
       } else if (
