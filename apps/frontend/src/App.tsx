@@ -2,14 +2,16 @@ import { useEffect, useRef, useState, type FormEvent, type ReactNode, type RefOb
 import './App.css'
 import lightLogo from './assets/suaraai-logo-light.png'
 import { ThemePicker } from './ThemePicker'
-import type { Feedback, FlowState, InputKind, Session, StateEvent, TalkMap } from './domain/types'
-import { completeSession, prepareSession, askKnowledge, updateTalkMap, uploadKnowledge } from './lib/api'
+import type { Feedback, FlowState, Hint, InputKind, Session, StateEvent, TalkMap } from './domain/types'
+import { completeSession, prepareSession, askKnowledge, requestRealtimeHint, updateTalkMap, uploadKnowledge } from './lib/api'
 import { connectAudioToSocket, createVideoRecorder, stopMediaStream, type AudioPipeline } from './lib/audio'
-import { event, fillerDensity, repetitionScore, selectHint, semanticProgress, SpeakingFlowMachine } from './lib/flow'
+import { coveredConcepts, event, fillerDensity, repetitionScore, selectHint, semanticProgressWithCoverage, SpeakingFlowMachine, words } from './lib/flow'
 import { findActiveNode, updateNodeStatuses } from './lib/talkMap'
 import { openAssemblySocket, parseSttMessage } from './lib/stt'
 
 type AppMode = 'setup' | 'map' | 'ready' | 'recording' | 'preview' | 'feedback'
+const SECTION_GRACE_MS = 2000
+const MAX_FINAL_TRANSCRIPT_WINDOW_CHARS = 2400
 
 function MicIcon() { return <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="3" width="8" height="12" rx="4" /><path d="M5 11a7 7 0 0 0 14 0M12 18v3M9 21h6" /></svg> }
 function ArrowIcon() { return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h13M13 6l6 6-6 6" /></svg> }
@@ -25,7 +27,7 @@ function App() {
   const [transcript, setTranscript] = useState('')
   const [partialTranscript, setPartialTranscript] = useState('')
   const [flowState, setFlowState] = useState<FlowState>('FLOWING')
-  const [hint, setHint] = useState<ReturnType<typeof selectHint>>(null)
+  const [hint, setHint] = useState<Hint | null>(null)
   const [recordingSeconds, setRecordingSeconds] = useState(0)
   const [sttStatus, setSttStatus] = useState('Preparing live assistance')
   const [error, setError] = useState('')
@@ -47,10 +49,15 @@ function App() {
   const chunksRef = useRef<Blob[]>([])
   const machineRef = useRef(new SpeakingFlowMachine())
   const lastSpeechAtRef = useRef(Date.now())
-  const stableSegmentRef = useRef('')
+  const recentFinalTranscriptRef = useRef('')
   const talkMapRef = useRef<TalkMap | null>(null)
   const activeIndexRef = useRef(0)
   const coveredRef = useRef<Set<string>>(new Set())
+  const coveredConceptsRef = useRef<Map<string, Set<string>>>(new Map())
+  const nodeEvidenceRef = useRef<Map<string, number>>(new Map())
+  const sectionGraceUntilRef = useRef(0)
+  const hintRequestVersionRef = useRef(0)
+  const previousHintsRef = useRef<string[]>([])
   const flowStateRef = useRef<FlowState>('FLOWING')
 
   useEffect(() => { talkMapRef.current = talkMap }, [talkMap])
@@ -80,30 +87,110 @@ function App() {
 
   const addEvent = (nextEvent: StateEvent) => setStateEvents((current) => [...current, nextEvent])
 
+  const coveredConceptsForNode = (node: TalkMap['nodes'][number] | undefined) => (
+    node ? (coveredConceptsRef.current.get(node.id) ?? new Set<string>()) : new Set<string>()
+  )
+
+  const coveredKeywordsForNode = (node: TalkMap['nodes'][number] | undefined) => {
+    const concepts = coveredConceptsForNode(node)
+    return node?.keywords.filter((keyword) => words(keyword).every((word) => concepts.has(word))) ?? []
+  }
+
+  const rememberHint = (nextHint: Hint | null) => {
+    if (!nextHint) return
+    const text = [nextHint.keyword, nextHint.starter, nextHint.nextIdea].filter(Boolean).join(' ')
+    if (!text || previousHintsRef.current.includes(text)) return
+    previousHintsRef.current = [...previousHintsRef.current, text].slice(-5)
+  }
+
+  const updateFinalTranscriptWindow = (finalTurn: string) => {
+    recentFinalTranscriptRef.current = `${recentFinalTranscriptRef.current} ${finalTurn}`
+      .trim()
+      .slice(-MAX_FINAL_TRANSCRIPT_WINDOW_CHARS)
+    return recentFinalTranscriptRef.current
+  }
+
+  const requestContextualHint = async () => {
+    const currentSession = session
+    const currentTalkMap = talkMapRef.current
+    const currentActiveIndex = activeIndexRef.current
+    if (!currentSession || !currentTalkMap) return
+
+    const currentNode = currentTalkMap.nodes[currentActiveIndex]
+    const fallback = selectHint(
+      currentTalkMap,
+      currentActiveIndex,
+      'STUCK',
+      coveredConceptsForNode(currentNode),
+    )
+    rememberHint(fallback)
+    setHint(fallback)
+    if (fallback) {
+      addEvent(event('HINT_SHOWN', 'deterministic', 'STUCK', currentNode?.id))
+    }
+
+    const requestVersion = ++hintRequestVersionRef.current
+    try {
+      const generated = await requestRealtimeHint(currentSession, {
+        activeIndex: currentActiveIndex,
+        recentTranscript: recentFinalTranscriptRef.current,
+        coveredKeywords: coveredKeywordsForNode(currentNode),
+        previousHints: previousHintsRef.current,
+      })
+      if (
+        requestVersion !== hintRequestVersionRef.current
+        || activeIndexRef.current !== currentActiveIndex
+        || flowStateRef.current !== 'STUCK'
+      ) return
+      rememberHint(generated)
+      setHint(generated)
+      addEvent(event('HINT_SHOWN', generated.source ?? 'ai', 'STUCK', currentNode?.id))
+    } catch {
+      addEvent(event('HINT_GENERATION_FAILED', 'deterministic fallback retained', 'STUCK', currentNode?.id))
+    }
+  }
+
   const evaluateFlow = () => {
     const currentTalkMap = talkMapRef.current
     const currentActiveIndex = activeIndexRef.current
+    const currentNode = currentTalkMap?.nodes[currentActiveIndex]
+    const currentConcepts = coveredConceptsForNode(currentNode)
     const nextState = machineRef.current.observe({
       silenceMs: Date.now() - lastSpeechAtRef.current,
-      fillerDensity: fillerDensity(stableSegmentRef.current),
-      repetitionScore: repetitionScore(stableSegmentRef.current),
-      semanticProgress: semanticProgress(currentTalkMap?.nodes[currentActiveIndex], stableSegmentRef.current),
-      activeNodeComplete: Boolean(
-        currentTalkMap?.nodes[currentActiveIndex]
-        && coveredRef.current.has(currentTalkMap.nodes[currentActiveIndex].id),
+      fillerDensity: fillerDensity(recentFinalTranscriptRef.current),
+      repetitionScore: repetitionScore(recentFinalTranscriptRef.current),
+      semanticProgress: semanticProgressWithCoverage(
+        currentNode,
+        recentFinalTranscriptRef.current,
+        currentConcepts,
       ),
-      recentlyCompletedSection: false,
+      activeNodeComplete: Boolean(
+        currentNode && coveredRef.current.has(currentNode.id),
+      ),
+      recentlyCompletedSection: Date.now() < sectionGraceUntilRef.current,
     })
     applyFlowDecision(nextState.state, nextState.changed)
   }
 
-  const applyFlowDecision = (nextState: FlowState, changed: boolean) => {
+  const applyFlowDecision = (nextState: FlowState, changed: boolean, forceRescue = false) => {
     const currentTalkMap = talkMapRef.current
     const currentActiveIndex = activeIndexRef.current
     if (changed) addEvent(event(nextState, undefined, nextState, currentTalkMap?.nodes[currentActiveIndex]?.id))
     flowStateRef.current = nextState
     setFlowState(nextState)
-    setHint(selectHint(currentTalkMap ?? { title: '', nodes: [] }, currentActiveIndex, nextState))
+    const currentNode = currentTalkMap?.nodes[currentActiveIndex]
+    const deterministicHint = selectHint(
+      currentTalkMap ?? { title: '', nodes: [] },
+      currentActiveIndex,
+      nextState,
+      coveredConceptsForNode(currentNode),
+    )
+    if (nextState === 'STUCK' && (changed || forceRescue)) {
+      void requestContextualHint()
+    } else {
+      rememberHint(deterministicHint)
+      setHint(deterministicHint)
+    }
   }
 
   const handleTurn = (turnText: string, final: boolean) => {
@@ -111,41 +198,74 @@ function App() {
     if (!cleaned) return
     setPartialTranscript(final ? '' : cleaned)
     lastSpeechAtRef.current = Date.now()
-    stableSegmentRef.current = final ? cleaned : `${stableSegmentRef.current} ${cleaned}`.slice(-800)
-    if (!final) return
+    if (!final) {
+      if (flowStateRef.current === 'HESITATING' || flowStateRef.current === 'STUCK') {
+        hintRequestVersionRef.current += 1
+        setHint(null)
+      }
+      return
+    }
+    hintRequestVersionRef.current += 1
+    setHint(null)
+    const recentFinalTranscript = updateFinalTranscriptWindow(cleaned)
     const currentTalkMap = talkMapRef.current
     const currentActiveIndex = activeIndexRef.current
     const currentCovered = coveredRef.current
     const currentFlowState = flowStateRef.current
     setTranscript((current) => `${current} ${cleaned}`.trim())
-    const nextIndex = findActiveNode(currentTalkMap ?? { title: '', nodes: [] }, cleaned, currentActiveIndex)
+    const node = currentTalkMap?.nodes[currentActiveIndex]
+    const nextCovered = new Set(currentCovered)
+    let sectionCompleted = false
+    let currentProgress = 0
+    if (node) {
+      const nodeConcepts = new Set(coveredConceptsForNode(node))
+      for (const concept of coveredConcepts(node, cleaned)) nodeConcepts.add(concept)
+      coveredConceptsRef.current.set(node.id, nodeConcepts)
+      currentProgress = semanticProgressWithCoverage(node, recentFinalTranscript, nodeConcepts)
+      if (currentProgress >= 0.6) {
+        const evidence = (nodeEvidenceRef.current.get(node.id) ?? 0) + 1
+        nodeEvidenceRef.current.set(node.id, evidence)
+        if (evidence >= 2) {
+          nextCovered.add(node.id)
+          sectionCompleted = !currentCovered.has(node.id)
+          if (sectionCompleted) sectionGraceUntilRef.current = Date.now() + SECTION_GRACE_MS
+        }
+      }
+    }
+    const coveredIndices = new Set(
+      currentTalkMap?.nodes.flatMap((item, index) => nextCovered.has(item.id) ? [index] : []) ?? [],
+    )
+    const nextIndex = currentTalkMap && sectionCompleted && currentActiveIndex < currentTalkMap.nodes.length - 1
+      ? currentActiveIndex + 1
+      : findActiveNode(
+        currentTalkMap ?? { title: '', nodes: [] },
+        recentFinalTranscript,
+        currentActiveIndex,
+        coveredIndices,
+      )
     if (nextIndex !== currentActiveIndex && currentTalkMap) {
       setActiveIndex(nextIndex)
       activeIndexRef.current = nextIndex
       addEvent(event('TALK_NODE_CHANGED', undefined, currentFlowState, currentTalkMap.nodes[nextIndex]?.id))
     }
-    const node = currentTalkMap?.nodes[currentActiveIndex]
-    if (node && semanticProgress(node, cleaned) >= 0.6) {
-      const nextCovered = new Set(currentCovered).add(node.id)
-      coveredRef.current = nextCovered
-      setCovered(nextCovered)
-      if (currentTalkMap) {
-        const updatedTalkMap = updateNodeStatuses(currentTalkMap, nextIndex, nextCovered)
-        talkMapRef.current = updatedTalkMap
-        setTalkMap(updatedTalkMap)
-      }
+    coveredRef.current = nextCovered
+    setCovered(nextCovered)
+    if (currentTalkMap) {
+      const updatedTalkMap = updateNodeStatuses(currentTalkMap, nextIndex, nextCovered)
+      talkMapRef.current = updatedTalkMap
+      setTalkMap(updatedTalkMap)
     }
     const nextState = machineRef.current.observe({
       silenceMs: 0,
       fillerDensity: fillerDensity(cleaned),
       repetitionScore: repetitionScore(cleaned),
-      semanticProgress: semanticProgress(node, cleaned),
-      activeNodeComplete: false,
+      semanticProgress: currentProgress,
+      activeNodeComplete: Boolean(node && nextCovered.has(node.id)),
       meaningfulSpeechResumed: true,
+      recentlyCompletedSection: sectionCompleted,
     })
     if (currentFlowState === 'HESITATING' || currentFlowState === 'STUCK') addEvent(event('MEANINGFUL_SPEECH_RESUMED', undefined, nextState.state))
     applyFlowDecision(nextState.state, nextState.changed)
-    setHint(null)
   }
 
   const createSpeakingSession = async (submitEvent: FormEvent) => {
@@ -161,6 +281,12 @@ function App() {
       activeIndexRef.current = 0
       coveredRef.current = new Set()
       setCovered(new Set())
+      coveredConceptsRef.current = new Map()
+      nodeEvidenceRef.current = new Map()
+      recentFinalTranscriptRef.current = ''
+      sectionGraceUntilRef.current = 0
+      hintRequestVersionRef.current += 1
+      previousHintsRef.current = []
       setMode('map')
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'The session could not be prepared.')
@@ -186,7 +312,20 @@ function App() {
 
   const startRecording = async () => {
     if (!mediaStream || !talkMap) return
+    const freshTalkMap = updateNodeStatuses(talkMap, 0, new Set())
     setError('')
+    setTalkMap(freshTalkMap)
+    talkMapRef.current = freshTalkMap
+    setActiveIndex(0)
+    activeIndexRef.current = 0
+    setCovered(new Set())
+    coveredRef.current = new Set()
+    coveredConceptsRef.current = new Map()
+    nodeEvidenceRef.current = new Map()
+    recentFinalTranscriptRef.current = ''
+    sectionGraceUntilRef.current = 0
+    hintRequestVersionRef.current += 1
+    previousHintsRef.current = []
     setTranscript('')
     setPartialTranscript('')
     setRecordingSeconds(0)
@@ -223,6 +362,7 @@ function App() {
   }
 
   const finishRecording = async () => {
+    hintRequestVersionRef.current += 1
     audioRef.current?.flush()
     audioRef.current?.close()
     audioRef.current = null
@@ -270,8 +410,7 @@ function App() {
       manualHintRequested: true,
     })
     addEvent(event('HINT_REQUESTED', undefined, 'STUCK', currentTalkMap.nodes[currentActiveIndex]?.id))
-    addEvent(event('HINT_SHOWN', 'manual', 'STUCK', currentTalkMap.nodes[currentActiveIndex]?.id))
-    applyFlowDecision(nextState.state, true)
+    applyFlowDecision(nextState.state, true, true)
   }
 
   const complete = async () => {
@@ -292,6 +431,7 @@ function App() {
   }
 
   const reset = () => {
+    hintRequestVersionRef.current += 1
     stopMediaStream(mediaStream)
     setMode('setup')
     setSession(null)
@@ -305,6 +445,11 @@ function App() {
     setSources([])
     setCameraReady(false)
     setMediaStream(null)
+    coveredConceptsRef.current = new Map()
+    nodeEvidenceRef.current = new Map()
+    recentFinalTranscriptRef.current = ''
+    sectionGraceUntilRef.current = 0
+    previousHintsRef.current = []
   }
 
   if (!session || !talkMap || mode === 'setup') {

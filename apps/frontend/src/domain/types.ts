@@ -49,4 +49,5 @@ export type Hint = {
   keyword?: string
   starter?: string
   nextIdea?: string
+  source?: 'ai' | 'deterministic'
 }

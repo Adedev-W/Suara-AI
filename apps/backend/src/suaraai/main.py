@@ -41,7 +41,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     application.include_router(
         create_session_router(
-            services.prepare_session, services.update_talk_map, services.complete_session
+            services.prepare_session,
+            services.update_talk_map,
+            services.complete_session,
+            services.generate_hint,
         ),
         prefix=resolved_settings.api_prefix,
     )

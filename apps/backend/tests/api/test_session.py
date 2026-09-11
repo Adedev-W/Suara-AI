@@ -55,6 +55,49 @@ def test_session_routes_reject_an_invalid_session_token() -> None:
     assert response.status_code == 404
 
 
+def test_realtime_hint_returns_a_deterministic_fallback_without_llm() -> None:
+    client = TestClient(create_app(Settings(database_url=None, assemblyai_api_key=None)))
+
+    prepared = client.post(
+        "/api/v1/session/prepare",
+        json={"input_kind": "topic", "input_text": "How a bicycle works"},
+    )
+    session = prepared.json()
+
+    response = client.post(
+        f"/api/v1/session/{session['session_id']}/hint",
+        headers={"X-Session-Token": session["access_token"]},
+        json={
+            "active_index": 0,
+            "recent_transcript": "The bicycle uses pedals.",
+            "covered_keywords": [],
+            "previous_hints": [],
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["source"] == "deterministic"
+    assert response.json()["starter"]
+    assert response.json()["next_idea"]
+
+
+def test_realtime_hint_requires_the_session_token() -> None:
+    client = TestClient(create_app(Settings(database_url=None, assemblyai_api_key=None)))
+
+    prepared = client.post(
+        "/api/v1/session/prepare",
+        json={"input_kind": "topic", "input_text": "How a bicycle works"},
+    )
+    session = prepared.json()
+
+    response = client.post(
+        f"/api/v1/session/{session['session_id']}/hint",
+        json={"active_index": 0},
+    )
+
+    assert response.status_code == 401
+
+
 def test_stt_token_reports_missing_provider_configuration() -> None:
     client = TestClient(create_app(Settings(database_url=None, assemblyai_api_key=None)))
 
@@ -84,8 +127,9 @@ def test_session_prepare_logs_diagnostic_llm_gateway_error(
                 json={"input_kind": "topic", "input_text": "How a bicycle works"},
             )
 
-    with caplog.at_level(logging.WARNING), patch.object(
-        AssemblyAILlmGateway, "generate", new=fail_generation
+    with (
+        caplog.at_level(logging.WARNING),
+        patch.object(AssemblyAILlmGateway, "generate", new=fail_generation),
     ):
         response = asyncio.run(make_request())
 

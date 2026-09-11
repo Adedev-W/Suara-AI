@@ -8,6 +8,7 @@ from suaraai.domain.copilot import (
     DocumentChunk,
     ExtractedDocument,
     Feedback,
+    Hint,
     InputKind,
     RetrievedChunk,
     Session,
@@ -21,6 +22,17 @@ class TalkMapGenerator(Protocol):
 
 class FeedbackGenerator(Protocol):
     async def generate_feedback(self, transcript: str, talk_map: TalkMap) -> Feedback: ...
+
+
+class HintGenerator(Protocol):
+    async def generate_hint(
+        self,
+        talk_map: TalkMap,
+        active_index: int,
+        recent_transcript: str,
+        covered_keywords: Sequence[str],
+        previous_hints: Sequence[str],
+    ) -> Hint: ...
 
 
 class QuestionAnswerer(Protocol):

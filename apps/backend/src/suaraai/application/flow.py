@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 from suaraai.domain.copilot import (
@@ -117,11 +118,24 @@ class StuckDetector:
         return self.state
 
 
-def select_hint(talk_map: TalkMap, active_index: int, state: FlowState) -> Hint | None:
-    if not talk_map.nodes or state == FlowState.FLOWING:
+def select_hint(
+    talk_map: TalkMap,
+    active_index: int,
+    state: FlowState,
+    covered_keywords: Sequence[str] = (),
+) -> Hint | None:
+    if not talk_map.nodes or state in {FlowState.FLOWING, FlowState.RECOVERED}:
         return None
     node = talk_map.nodes[min(active_index, len(talk_map.nodes) - 1)]
-    next_idea = next((keyword for keyword in node.keywords if keyword), None)
+    covered = {word for keyword in covered_keywords for word in normalize_words(keyword)}
+    next_idea = next(
+        (
+            keyword
+            for keyword in node.keywords
+            if any(word not in covered for word in normalize_words(keyword))
+        ),
+        node.keywords[-1] if node.keywords else None,
+    )
     if state == FlowState.HESITATING:
         return Hint(level=1, keyword=next_idea, starter=None, next_idea=None)
     return Hint(

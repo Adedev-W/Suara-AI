@@ -10,7 +10,9 @@ from suaraai.application.repositories import InMemorySessionRepository
 from suaraai.application.session import (
     CompleteSession,
     DeterministicFeedbackGenerator,
+    DeterministicHintGenerator,
     DeterministicTalkMapGenerator,
+    GenerateHint,
     PrepareSession,
     UpdateTalkMap,
 )
@@ -28,6 +30,7 @@ class ApplicationServices:
     prepare_session: PrepareSession
     update_talk_map: UpdateTalkMap
     complete_session: CompleteSession
+    generate_hint: GenerateHint
     speech_tokens: AssemblyAISpeechTokenService
     knowledge: KnowledgeService
 
@@ -52,6 +55,7 @@ def create_services(
     feedback_generator: FeedbackGenerator = (
         gateway if settings.assemblyai_api_key else DeterministicFeedbackGenerator()
     )
+    hint_generator = gateway if settings.assemblyai_api_key else DeterministicHintGenerator()
     answerer: QuestionAnswerer = gateway
     embedding_service = LocalEmbeddingService(settings.embedding_model)
     return ApplicationServices(
@@ -59,6 +63,7 @@ def create_services(
         prepare_session=PrepareSession(repository, generator),
         update_talk_map=UpdateTalkMap(repository),
         complete_session=CompleteSession(repository, feedback_generator),
+        generate_hint=GenerateHint(repository, hint_generator),
         speech_tokens=AssemblyAISpeechTokenService(
             settings.assemblyai_api_key,
             settings.assemblyai_token_ttl_seconds,

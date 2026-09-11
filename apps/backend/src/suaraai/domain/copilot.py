@@ -76,6 +76,7 @@ class Hint:
     keyword: str | None
     starter: str | None
     next_idea: str | None
+    source: str = "deterministic"
 
 
 @dataclass(frozen=True, slots=True)

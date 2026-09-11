@@ -92,18 +92,46 @@ export function repetitionScore(text: string): number {
 }
 
 export function semanticProgress(node: TalkMap['nodes'][number] | undefined, text: string): number {
+  return semanticProgressWithCoverage(node, text)
+}
+
+export function semanticProgressWithCoverage(
+  node: TalkMap['nodes'][number] | undefined,
+  text: string,
+  coveredConcepts: ReadonlySet<string> = new Set(),
+): number {
   if (!node) return 0
-  const recent = new Set(words(text))
-  const concepts = node.keywords.flatMap(words)
+  const recent = new Set([...words(text), ...coveredConcepts])
+  const concepts = [...new Set(node.keywords.flatMap(words))]
   return concepts.filter((concept) => recent.has(concept)).length / Math.max(1, concepts.length)
 }
 
-export function selectHint(talkMap: TalkMap, activeIndex: number, state: FlowState): Hint | null {
-  if (state === 'FLOWING' || !talkMap.nodes.length) return null
+export function coveredConcepts(node: TalkMap['nodes'][number] | undefined, text: string): Set<string> {
+  if (!node) return new Set()
+  const spoken = new Set(words(text))
+  return new Set(node.keywords.flatMap(words).filter((concept) => spoken.has(concept)))
+}
+
+export function nextUncoveredKeyword(
+  node: TalkMap['nodes'][number] | undefined,
+  covered: ReadonlySet<string> = new Set(),
+): string | undefined {
+  if (!node) return undefined
+  return node.keywords.find((keyword) => words(keyword).some((concept) => !covered.has(concept)))
+    ?? node.keywords.at(-1)
+}
+
+export function selectHint(
+  talkMap: TalkMap,
+  activeIndex: number,
+  state: FlowState,
+  covered: ReadonlySet<string> = new Set(),
+): Hint | null {
+  if (state === 'FLOWING' || state === 'RECOVERED' || !talkMap.nodes.length) return null
   const node = talkMap.nodes[Math.min(activeIndex, talkMap.nodes.length - 1)]
-  const keyword = node.keywords[0]
-  if (state === 'HESITATING') return { level: 1, keyword }
-  return { level: 2, keyword, starter: node.starter, nextIdea: node.next_prompt }
+  const keyword = nextUncoveredKeyword(node, covered)
+  if (state === 'HESITATING') return { level: 1, keyword, source: 'deterministic' }
+  return { level: 2, keyword, starter: node.starter, nextIdea: node.next_prompt, source: 'deterministic' }
 }
 
 export function event(type: string, detail?: string, state?: FlowState, nodeId?: string): StateEvent {

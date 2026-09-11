@@ -5,9 +5,15 @@ from collections.abc import Sequence
 from uuid import UUID
 
 from suaraai.application.flow import mark_active_node
-from suaraai.application.ports import FeedbackGenerator, SessionRepository, TalkMapGenerator
+from suaraai.application.ports import (
+    FeedbackGenerator,
+    HintGenerator,
+    SessionRepository,
+    TalkMapGenerator,
+)
 from suaraai.domain.copilot import (
     Feedback,
+    Hint,
     InputKind,
     NodeStatus,
     Session,
@@ -97,6 +103,35 @@ class CompleteSession:
         return session, feedback
 
 
+class GenerateHint:
+    def __init__(self, repository: SessionRepository, generator: HintGenerator) -> None:
+        self._repository = repository
+        self._generator = generator
+
+    async def execute(
+        self,
+        session_id: UUID,
+        access_token: str,
+        active_index: int,
+        recent_transcript: str,
+        covered_keywords: list[str],
+        previous_hints: list[str],
+    ) -> Hint:
+        session = await self._repository.get(session_id, access_token)
+        if session is None:
+            raise SessionNotFoundError("Session was not found")
+        if not session.talk_map.nodes:
+            raise SessionInputError("A Talk Map is required before requesting a hint")
+        bounded_index = min(max(active_index, 0), len(session.talk_map.nodes) - 1)
+        return await self._generator.generate_hint(
+            session.talk_map,
+            bounded_index,
+            recent_transcript.strip(),
+            covered_keywords,
+            previous_hints,
+        )
+
+
 class DeterministicTalkMapGenerator:
     async def generate(self, input_kind: InputKind, input_text: str) -> TalkMap:
         title = input_text.splitlines()[0][:80].strip().rstrip(".") or "Speaking practice"
@@ -121,6 +156,30 @@ class DeterministicTalkMapGenerator:
         ]
 
         return TalkMap(title=title, nodes=nodes)
+
+
+class DeterministicHintGenerator:
+    async def generate_hint(
+        self,
+        talk_map: TalkMap,
+        active_index: int,
+        recent_transcript: str,
+        covered_keywords: Sequence[str],
+        previous_hints: Sequence[str],
+    ) -> Hint:
+        del recent_transcript, previous_hints
+        node = talk_map.nodes[active_index]
+        covered = {keyword.casefold().strip() for keyword in covered_keywords}
+        keyword = next(
+            (value for value in node.keywords if value.casefold().strip() not in covered),
+            node.keywords[-1] if node.keywords else None,
+        )
+        return Hint(
+            level=2,
+            keyword=keyword,
+            starter=node.starter,
+            next_idea=node.next_prompt or keyword,
+        )
 
 
 class DeterministicFeedbackGenerator:

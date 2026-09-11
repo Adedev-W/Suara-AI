@@ -31,6 +31,9 @@ runtime browser test dependency is currently installed.
    beyond 3 seconds to observe a stronger cue. Resume speaking and confirm the
    recovered message and cooldown behavior.
 6. Press Hint manually and confirm a cue appears without exposing a full script.
+   When an LLM key is configured, confirm a contextual cue can replace the
+   deterministic fallback; when it is unavailable, confirm the fallback remains
+   visible and recording continues.
 7. Stop recording, play the local preview, and download the WebM recording.
 8. Request feedback and confirm the result includes strengths, improvements,
    useful phrases, and a concrete next practice.

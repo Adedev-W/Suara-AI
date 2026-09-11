@@ -14,6 +14,8 @@ The implementation follows the PRD through the web scope of Phase 3:
   FLOWING/HESITATING/STUCK/RECOVERED states, cooldowns, and manual hints.
 - Phase 3: structured post-recording feedback, PDF/PPTX ingestion, local
   embeddings, PostgreSQL plus pgvector retrieval, and session-scoped Q&A.
+- Realtime rescue hints: deterministic progress tracking with an optional,
+  event-driven LLM cue requested only when the speaker is stuck.
 
 Native app integrations and server-side video storage are outside the selected
 web scope. Video stays in the browser as a local object URL. The final
@@ -78,6 +80,13 @@ generation. The backend can prepare sessions and produce deterministic local
 feedback without the key, but realtime STT and provider-backed Talk Maps,
 feedback, and Q&A require it.
 
+The default LLM model is `qwen3.5-4b-32k-fast`. Talk Maps and speaking feedback
+ask the model for JSON in the prompt and validate the response locally, because
+this fast model is configured for text/streaming rather than provider-enforced
+JSON schema or tool calling. The model must be enabled for the configured
+AssemblyAI API key; set `SUARAAI_LLM_MODEL` and `SUARAAI_LLM_FALLBACK_MODEL` to
+account-enabled models when needed.
+
 `SUARAAI_DATABASE_URL` enables PostgreSQL persistence. When it is empty, the
 backend uses an in-memory repository with a 24-hour session lifetime, which is
 useful for a lightweight local UI run. The full knowledge pipeline requires
@@ -116,6 +125,7 @@ volume is named `suaraai-postgres`.
 | `POST` | `/api/v1/session/prepare` | Create an anonymous session and Talk Map |
 | `PATCH` | `/api/v1/session/{id}/talk-map` | Save Talk Map ordering/edits |
 | `POST` | `/api/v1/stt/token` | Issue a short-lived AssemblyAI browser token |
+| `POST` | `/api/v1/session/{id}/hint` | Generate a contextual rescue hint with a deterministic fallback |
 | `POST` | `/api/v1/session/{id}/complete` | Persist transcript/events and generate feedback |
 | `POST` | `/api/v1/knowledge/documents` | Parse and index one PDF or PPTX |
 | `POST` | `/api/v1/knowledge/query` | Answer from the current session's chunks |
@@ -125,6 +135,12 @@ by the prepare route. The server stores only its SHA-256 hash in PostgreSQL.
 The frontend uses the temporary STT token to connect directly to AssemblyAI;
 the long-lived provider key never reaches the browser. Realtime transport and
 audio assumptions are documented in [docs/realtime.md](docs/realtime.md).
+The hint route receives only a bounded recent final-transcript window and Talk
+Map context. The frontend keeps a deterministic hint visible while an optional
+LLM rescue response is pending, and discards responses that arrive after speech
+or a Talk Map transition. This event-driven LLM rescue is an explicit extension
+to the PRD's original pre-recording-only LLM scope; the deterministic fallback
+continues to provide the PRD-compatible behavior.
 
 ## Quality checks
 

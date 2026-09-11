@@ -31,3 +31,9 @@ The recording flow requires camera and microphone permission, `MediaRecorder`,
 `AudioWorklet`, and a secure context in production. The browser sends 16 kHz
 mono PCM16 audio to the AssemblyAI streaming socket and retains the video blob
 locally for playback and download.
+
+Final transcript turns drive Talk Map progress and automatic assistance. A
+deterministic cue appears immediately for hesitation or stuck states; when the
+backend has an LLM key, a bounded contextual rescue hint is requested only for
+`STUCK` or a manual Hint action. Late or failed hint responses never stop the
+recording, and the deterministic cue remains as the fallback.

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -96,6 +96,23 @@ class SessionResponse(BaseModel):
 
 class UpdateTalkMapRequest(BaseModel):
     talk_map: TalkMapPayload
+
+
+class RealtimeHintRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    active_index: int = Field(ge=0, le=6)
+    recent_transcript: str = Field(default="", max_length=6_000)
+    covered_keywords: list[str] = Field(default_factory=list, max_length=100)
+    previous_hints: list[str] = Field(default_factory=list, max_length=5)
+
+
+class HintResponse(BaseModel):
+    level: int = Field(ge=2, le=3)
+    keyword: str | None = Field(default=None, max_length=240)
+    starter: str | None = Field(default=None, max_length=240)
+    next_idea: str | None = Field(default=None, max_length=240)
+    source: Literal["ai", "deterministic"]
 
 
 class SttTokenResponse(BaseModel):
