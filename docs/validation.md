@@ -44,8 +44,10 @@ no runtime browser test dependency is currently installed.
    saved before camera readiness.
 3. Allow camera and microphone access. Confirm the preview is mirrored in the
    readiness and recording screens.
-4. Start recording. Confirm the timer and listening status update in real time,
-   and a final transcript turn updates the Talk Map.
+4. Start recording. Confirm the timer and listening status update in real time.
+   Speak a sentence and confirm partial words appear in the Live transcript
+   panel while you speak, then settle into the final transcript when the turn
+   completes. Confirm only the final turn updates the Talk Map.
 5. Stay silent for more than 1.5 seconds before first speaking and confirm no
    automatic hint appears. Speak, pause for 1.4 seconds, and confirm no hint;
    continue the pause beyond 1.5 seconds and confirm a Talk Map fallback appears

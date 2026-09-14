@@ -142,7 +142,9 @@ response is pending. The browser cancels responses after speech resumes and
 refreshes the request when the active Talk Map node changes. Provider failures
 degrade to a 200 deterministic response with a sanitized diagnostic in server
 logs. This event-driven LLM rescue is an explicit extension to the PRD's
-original pre-recording-only LLM scope.
+original pre-recording-only LLM scope. During recording, AssemblyAI partial
+turns are shown in a rolling Live transcript panel; only final turns are added
+to the complete transcript used by preview and feedback.
 
 ## Quality checks
 

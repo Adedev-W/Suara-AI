@@ -35,12 +35,16 @@ export async function openAssemblySocket(speechModel = 'universal-3-5-pro'): Pro
 
 export function parseSttMessage(data: string): SttTurn | null {
   try {
-    const message = JSON.parse(data) as Partial<SttTurn>
+    const message = JSON.parse(data) as {
+      type?: unknown
+      transcript?: unknown
+      end_of_turn?: unknown
+    }
     if (message.type !== 'Turn') return null
     return {
       type: 'Turn',
-      transcript: typeof message.transcript === 'string' ? message.transcript : undefined,
-      end_of_turn: message.end_of_turn === true,
+      transcript: typeof message.transcript === 'string' ? message.transcript : '',
+      isFinal: message.end_of_turn === true,
     }
   } catch {
     return null

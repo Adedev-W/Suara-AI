@@ -40,8 +40,8 @@ export type StateEvent = {
 
 export type SttTurn = {
   type: 'Turn'
-  transcript?: string
-  end_of_turn?: boolean
+  transcript: string
+  isFinal: boolean
 }
 
 export type Hint = {

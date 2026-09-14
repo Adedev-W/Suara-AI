@@ -10,10 +10,11 @@ Audio uses the browser's `AudioWorklet` to read microphone samples, resamples
 them to 16 kHz, encodes little-endian signed PCM16, and emits roughly 100 ms
 chunks. The same chunks provide browser-local voice activity before they are
 sent to AssemblyAI. Two consecutive chunks above the speech threshold count as
-voice activity. AssemblyAI final turns update the transcript and Talk Map but
-do not control the silence clock, so a delayed final turn cannot dismiss a
-valid rescue cue. The camera and microphone stream also feeds `MediaRecorder`,
-so preview and download remain local.
+voice activity. AssemblyAI partial turns update the visible rolling transcript
+while the speaker is talking. Only final turns update the canonical transcript,
+Talk Map, and hint context; they do not control the silence clock, so a delayed
+final turn cannot dismiss a valid rescue cue. The camera and microphone stream
+also feeds `MediaRecorder`, so preview and download remain local.
 
 The assistance lifecycle is intentionally deterministic:
 
@@ -32,9 +33,12 @@ without a cooldown. A manual Hint button uses the same fallback and request
 lifecycle. Talk Map matching still advances only when the next node's keyword
 score clears the current node by a margin.
 
-The browser keeps final turns in a bounded rolling window and accumulates
-covered concepts for the active Talk Map node. A node requires evidence across
-more than one finalized observation before it is marked covered.
+The browser keeps the complete final transcript for preview and feedback, plus
+a bounded rolling final-transcript context for hint requests. The recording UI
+shows the latest roughly 1,800 characters and the current partial turn in a
+separate subdued style. Covered concepts accumulate for the active Talk Map
+node, and a node requires evidence across more than one finalized observation
+before it is marked covered.
 
 When the state enters `STUCK`, the browser shows the deterministic Talk Map cue
 immediately and requests `POST /api/v1/session/{id}/hint` in the background. The

@@ -59,6 +59,13 @@ textarea::placeholder, input::placeholder { color: var(--muted); }
 .recording-controls button { display: inline-flex; align-items: center; gap: 7px; border: 0; color: #fff; background: rgba(20,18,16,.58); border-radius: 999px; padding: 10px 14px; cursor: pointer; font-size: 12px; }
 .recording-controls button span { display: grid; place-items: center; width: 18px; height: 18px; border: 1px solid currentColor; border-radius: 50%; }
 .recording-controls .stop-button { background: #fff; color: #24231f; }
+.recording-transcript { margin-top: 14px; padding: 15px 18px; border: 1px solid var(--line); border-radius: 18px; background: var(--panel); }
+.recording-transcript-header { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
+.recording-transcript-header .eyebrow { margin: 0; }
+.recording-transcript-state { color: var(--muted); font-size: 11px; }
+.recording-transcript-viewport { max-height: 136px; overflow-y: auto; margin-top: 9px; color: var(--ink); font-size: 14px; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
+.recording-transcript-empty, .recording-transcript-interim { color: var(--muted); }
+.recording-transcript-interim { font-style: italic; }
 .recording-map { display: flex; align-items: center; gap: 15px; padding: 19px 4px; }
 .recording-map .eyebrow { margin: 0; }
 .recording-map h2, .recording-map p { margin: 0; }
@@ -105,6 +112,7 @@ textarea::placeholder, input::placeholder { color: var(--muted); }
   .recording-map h2 { grid-column: 1 / -1; }
   .recording-map > p:not(.eyebrow) { grid-column: 1 / -1; }
   .mini-map { grid-column: 1 / -1; margin: 7px 0 0; }
+  .recording-transcript-header { align-items: flex-start; flex-direction: column; gap: 3px; }
   .feedback-grid { grid-template-columns: 1fr; margin-top: 40px; }
   .footer { font-size: 10px; }
   .footer span:first-child { max-width: 130px; }

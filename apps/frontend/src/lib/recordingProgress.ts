@@ -12,13 +12,14 @@ export type RecordingProgress = {
   nodeEvidence: Map<string, number>
   transcript: string
   recentTranscript: string
+  interimTranscript: string
   events: StateEvent[]
 }
 
 export type RecordingProgressAction =
   | { type: 'set-talk-map'; talkMap: TalkMap | null }
   | { type: 'begin'; talkMap: TalkMap; events: StateEvent[] }
-  | { type: 'final-turn'; text: string; at: number }
+  | { type: 'transcript-turn'; text: string; isFinal: boolean; at: number }
   | { type: 'add-event'; event: StateEvent }
 
 export function createRecordingProgress(talkMap: TalkMap | null = null): RecordingProgress {
@@ -30,6 +31,7 @@ export function createRecordingProgress(talkMap: TalkMap | null = null): Recordi
     nodeEvidence: new Map(),
     transcript: '',
     recentTranscript: '',
+    interimTranscript: '',
     events: [],
   }
 }
@@ -48,7 +50,18 @@ export function recordingProgressReducer(
   }
 
   const cleaned = action.text.trim()
-  if (!cleaned) return state
+  if (!action.isFinal) {
+    return cleaned ? { ...state, interimTranscript: cleaned } : state
+  }
+  if (!cleaned) return { ...state, interimTranscript: '' }
+  return applyFinalTurn({ ...state, interimTranscript: '' }, cleaned, action.at)
+}
+
+function applyFinalTurn(
+  state: RecordingProgress,
+  cleaned: string,
+  at: number,
+): RecordingProgress {
   const transcript = `${state.transcript} ${cleaned}`.trim()
   const recentTranscript = `${state.recentTranscript} ${cleaned}`
     .trim()
@@ -84,7 +97,7 @@ export function recordingProgressReducer(
     ? state.events
     : [...state.events, {
       type: 'TALK_NODE_CHANGED',
-      at: action.at,
+      at,
       nodeId: talkMap.nodes[activeIndex]?.id,
     }]
 
@@ -96,6 +109,7 @@ export function recordingProgressReducer(
     nodeEvidence,
     transcript,
     recentTranscript,
+    interimTranscript: '',
     events,
   }
 }

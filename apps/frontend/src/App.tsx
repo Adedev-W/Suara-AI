@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useReducer, useRef, useState, type FormEvent, type ReactNode, type RefObject } from 'react'
 import './App.css'
 import lightLogo from './assets/suaraai-logo-light.png'
+import { RealtimeTranscript } from './components/RealtimeTranscript'
 import { ThemePicker } from './ThemePicker'
-import type { Feedback, FlowState, InputKind, Session, StateEvent, TalkMap } from './domain/types'
+import type { Feedback, FlowState, InputKind, Session, StateEvent, SttTurn, TalkMap } from './domain/types'
 import { completeSession, prepareSession, askKnowledge, updateTalkMap, uploadKnowledge } from './lib/api'
 import { createAudioPipeline, createVideoRecorder, stopMediaStream, type AudioPipeline } from './lib/audio'
 import { event } from './lib/flow'
@@ -82,9 +83,13 @@ function App() {
     onEvent: addEvent,
   })
 
-  const handleTurn = useCallback((turnText: string, final: boolean) => {
-    if (!final || !turnText.trim()) return
-    dispatchProgress({ type: 'final-turn', text: turnText, at: Date.now() })
+  const handleTurn = useCallback((turn: SttTurn) => {
+    dispatchProgress({
+      type: 'transcript-turn',
+      text: turn.transcript,
+      isFinal: turn.isFinal,
+      at: Date.now(),
+    })
   }, [])
 
   const createSpeakingSession = async (submitEvent: FormEvent) => {
@@ -171,7 +176,7 @@ function App() {
       socketRef.current = socket
       socket.onmessage = (message) => {
         const turn = parseSttMessage(String(message.data))
-        if (turn?.transcript) handleTurn(turn.transcript, turn.end_of_turn === true)
+        if (turn) handleTurn(turn)
       }
       socket.onclose = () => {
         if (recorderRef.current !== recorder) return
@@ -293,7 +298,7 @@ function App() {
   return <Shell>
     {mode === 'map' && <TalkMapScreen talkMap={talkMap} setTalkMap={(nextTalkMap) => dispatchProgress({ type: 'set-talk-map', talkMap: nextTalkMap })} onContinue={async () => { try { const saved = await updateTalkMap({ ...session, talk_map: talkMap }); setSession(saved); dispatchProgress({ type: 'set-talk-map', talkMap: saved.talk_map }); setMode('ready') } catch (cause) { setError(cause instanceof Error ? cause.message : 'Talk Map could not be saved.') } }} error={error} />}
     {mode === 'ready' && <ReadyScreen videoRef={videoRef} cameraReady={cameraReady} onRequestCamera={requestCamera} onStart={startRecording} error={error} />}
-    {mode === 'recording' && <RecordingScreen videoRef={videoRef} talkMap={talkMap} activeIndex={activeIndex} flowState={realtimeAssistant.flowState} assistant={realtimeAssistant.view} recordingSeconds={recordingSeconds} sttStatus={sttStatus} isListening={isListening} onHint={showManualHint} onStop={finishRecording} />}
+    {mode === 'recording' && <RecordingScreen videoRef={videoRef} talkMap={talkMap} activeIndex={activeIndex} flowState={realtimeAssistant.flowState} assistant={realtimeAssistant.view} finalTranscript={progress.transcript} interimTranscript={progress.interimTranscript} recordingSeconds={recordingSeconds} sttStatus={sttStatus} isListening={isListening} onHint={showManualHint} onStop={finishRecording} />}
     {mode === 'preview' && <PreviewScreen videoUrl={videoUrl} transcript={transcript} onComplete={complete} onAgain={() => { setMode('ready'); void requestCamera() }} isSubmitting={isSubmitting} error={error} />}
     {mode === 'feedback' && feedback && <FeedbackScreen feedback={feedback} videoUrl={videoUrl} session={session} documentStatus={documentStatus} setDocumentStatus={setDocumentStatus} question={question} setQuestion={setQuestion} answer={answer} sources={sources} onAsk={async () => { try { const result = await askKnowledge(session, question); setAnswer(result.answer); setSources(result.sources.map((source) => `${source.source_name}${source.page_number ? ` · page ${source.page_number}` : ''}`)) } catch (cause) { setError(cause instanceof Error ? cause.message : 'The question could not be answered.') } }} onUpload={async (file) => { try { const result = await uploadKnowledge(session, file); setDocumentStatus(`${result.source_name} indexed in ${result.chunk_count} chunks.`) } catch (cause) { setDocumentStatus(cause instanceof Error ? cause.message : 'The document could not be indexed.') } }} onReset={reset} error={error} />}
   </Shell>
@@ -316,12 +321,12 @@ function ReadyScreen({ videoRef, cameraReady, onRequestCamera, onStart, error }:
   return <section className="page ready-page"><p className="eyebrow">Camera readiness</p><h1>Settle in.<br />Then start.</h1><div className="camera-card"><video ref={videoRef} autoPlay muted playsInline />{!cameraReady && <div className="camera-placeholder"><MicIcon /><span>Your camera preview appears here.</span></div>}</div><div className="readiness-row"><span><i className={cameraReady ? 'ready-dot' : ''} />{cameraReady ? 'Camera + mic ready' : 'Permission required'}</span><button type="button" onClick={onRequestCamera}>{cameraReady ? 'Refresh preview' : 'Enable camera'}</button></div><button className="primary-button" type="button" disabled={!cameraReady} onClick={onStart}>Start recording <ArrowIcon /></button>{error && <p className="error-message" role="alert">{error}</p>}</section>
 }
 
-function RecordingScreen({ videoRef, talkMap, activeIndex, flowState, assistant, recordingSeconds, sttStatus, isListening, onHint, onStop }: { videoRef: RefObject<HTMLVideoElement | null>; talkMap: TalkMap; activeIndex: number; flowState: FlowState; assistant: AssistantView; recordingSeconds: number; sttStatus: string; isListening: boolean; onHint: () => void; onStop: () => void }) {
+function RecordingScreen({ videoRef, talkMap, activeIndex, flowState, assistant, finalTranscript, interimTranscript, recordingSeconds, sttStatus, isListening, onHint, onStop }: { videoRef: RefObject<HTMLVideoElement | null>; talkMap: TalkMap; activeIndex: number; flowState: FlowState; assistant: AssistantView; finalTranscript: string; interimTranscript: string; recordingSeconds: number; sttStatus: string; isListening: boolean; onHint: () => void; onStop: () => void }) {
   const node = talkMap.nodes[activeIndex]
   const assistantStatus = flowState === 'STUCK'
     ? 'A cue is ready'
     : isListening ? 'Listening' : sttStatus
-  return <section className="recording-page"><div className="recording-video"><video ref={videoRef} autoPlay muted playsInline /><span className="recording-indicator"><i />REC {formatDuration(recordingSeconds)}</span><div className="recording-status">{assistantStatus}</div>{assistant.hint && <aside className={`hint-card${assistant.status === 'hidden' ? ' is-hidden' : ''}`} aria-live="polite" aria-hidden={assistant.status === 'hidden'}><span className="hint-label">Try this</span><strong>{assistant.hint.starter}</strong><p>{assistant.hint.nextIdea}</p><small>{assistant.status === 'visible' && assistant.personalizing ? 'Personalizing…' : 'Keep it in your own words.'}</small></aside>}<div className="recording-controls"><button type="button" onClick={onHint} aria-label="Show a hint"><span>?</span> Hint</button><button type="button" className="stop-button" onClick={onStop}>Stop recording</button></div></div><div className="recording-map"><p className="eyebrow">Current idea</p><h2>{node?.title}</h2><p>{node?.intent}</p><div className="mini-map">{talkMap.nodes.map((item) => <span key={item.id} className={item.status} />)}</div></div></section>
+  return <section className="recording-page"><div className="recording-video"><video ref={videoRef} autoPlay muted playsInline /><span className="recording-indicator"><i />REC {formatDuration(recordingSeconds)}</span><div className="recording-status">{assistantStatus}</div>{assistant.hint && <aside className={`hint-card${assistant.status === 'hidden' ? ' is-hidden' : ''}`} aria-live="polite" aria-hidden={assistant.status === 'hidden'}><span className="hint-label">Try this</span><strong>{assistant.hint.starter}</strong><p>{assistant.hint.nextIdea}</p><small>{assistant.status === 'visible' && assistant.personalizing ? 'Personalizing…' : 'Keep it in your own words.'}</small></aside>}<div className="recording-controls"><button type="button" onClick={onHint} aria-label="Show a hint"><span>?</span> Hint</button><button type="button" className="stop-button" onClick={onStop}>Stop recording</button></div></div><RealtimeTranscript finalTranscript={finalTranscript} interimTranscript={interimTranscript} statusLabel={isListening ? 'Listening' : sttStatus} /><div className="recording-map"><p className="eyebrow">Current idea</p><h2>{node?.title}</h2><p>{node?.intent}</p><div className="mini-map">{talkMap.nodes.map((item) => <span key={item.id} className={item.status} />)}</div></div></section>
 }
 
 function PreviewScreen({ videoUrl, transcript, onComplete, onAgain, isSubmitting, error }: { videoUrl: string | null; transcript: string; onComplete: () => void; onAgain: () => void; isSubmitting: boolean; error: string }) {
