@@ -10,8 +10,8 @@ The implementation follows the PRD through the web scope of Phase 3:
 - Phase 0: a working FastAPI and React monorepo with health checks and CI.
 - Phase 1: Talk Map preparation, editable ordering, anonymous sessions, camera
   preview, local video recording, and local playback/download.
-- Phase 2: AssemblyAI realtime transcription, deterministic flow detection,
-  FLOWING/HESITATING/STUCK/RECOVERED states, cooldowns, and manual hints.
+- Phase 2: AssemblyAI realtime transcription, browser-local voice activity,
+  1.5-second STUCK detection, recovery, and manual hints.
 - Phase 3: structured post-recording feedback, PDF/PPTX ingestion, local
   embeddings, PostgreSQL plus pgvector retrieval, and session-scoped Q&A.
 - Realtime rescue hints: deterministic progress tracking with an optional,
@@ -136,13 +136,13 @@ The frontend uses the temporary STT token to connect directly to AssemblyAI;
 the long-lived provider key never reaches the browser. Realtime transport and
 audio assumptions are documented in [docs/realtime.md](docs/realtime.md).
 The hint route receives only a bounded recent final-transcript window and Talk
-Map context. The frontend keeps a deterministic hint visible while an optional
-LLM rescue response is pending, and discards responses that arrive after speech
-or a Talk Map transition. Provider failures on this optional route degrade to a
-200 deterministic response with a sanitized diagnostic in server logs. This
-event-driven LLM rescue is an explicit extension to the PRD's original
-pre-recording-only LLM scope; the deterministic fallback continues to provide
-the PRD-compatible behavior.
+Map context. After the speaker has started, 1.5 seconds without local voice
+activity shows a deterministic hint immediately while an optional LLM rescue
+response is pending. The browser cancels responses after speech resumes and
+refreshes the request when the active Talk Map node changes. Provider failures
+degrade to a 200 deterministic response with a sanitized diagnostic in server
+logs. This event-driven LLM rescue is an explicit extension to the PRD's
+original pre-recording-only LLM scope.
 
 ## Quality checks
 
@@ -154,10 +154,18 @@ make test
 make build
 ```
 
-`make check` runs the aggregate workflow. The frontend currently has no runtime
-test runner in its dependency set, so its `test` script performs the TypeScript
-compilation smoke check; browser behavior is covered by the backend contract
-tests and the manual acceptance checklist in
+`make check` runs the aggregate workflow. Focused backend tests cover long Talk
+Map input, hint context validation, and deterministic provider fallback. The
+realtime conversation test is opt-in because it starts a real server, calls the
+configured LLM provider, and consumes provider quota:
+
+```bash
+SUARAAI_RUN_LIVE_LLM_TESTS=1 make test-backend
+```
+
+The frontend currently has no runtime test runner in its dependency set, so its
+`test` script performs the TypeScript compilation smoke check. Browser behavior
+and the text-based backend scenario are documented in
 [docs/validation.md](docs/validation.md).
 
 Run `make format` when source formatting needs to be applied. Never commit

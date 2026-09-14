@@ -4,7 +4,6 @@ import secrets
 from collections.abc import Sequence
 from uuid import UUID
 
-from suaraai.application.flow import mark_active_node
 from suaraai.application.ports import (
     FeedbackGenerator,
     HintGenerator,
@@ -18,7 +17,6 @@ from suaraai.domain.copilot import (
     NodeStatus,
     Session,
     TalkMap,
-    TalkMapNode,
 )
 
 
@@ -63,7 +61,10 @@ class UpdateTalkMap:
         session = await self._repository.get(session_id, access_token)
         if session is None:
             raise SessionNotFoundError("Session was not found")
-        mark_active_node(talk_map, 0)
+        for index, node in enumerate(talk_map.nodes):
+            if node.status == NodeStatus.COVERED and index != 0:
+                continue
+            node.status = NodeStatus.ACTIVE if index == 0 else NodeStatus.UPCOMING
         session.talk_map = talk_map
         await self._repository.update(session)
         return session
@@ -122,85 +123,12 @@ class GenerateHint:
             raise SessionNotFoundError("Session was not found")
         if not session.talk_map.nodes:
             raise SessionInputError("A Talk Map is required before requesting a hint")
-        bounded_index = min(max(active_index, 0), len(session.talk_map.nodes) - 1)
+        if not 0 <= active_index < len(session.talk_map.nodes):
+            raise SessionInputError("Active Talk Map index is out of range")
         return await self._generator.generate_hint(
             session.talk_map,
-            bounded_index,
+            active_index,
             recent_transcript.strip(),
             covered_keywords,
             previous_hints,
-        )
-
-
-class DeterministicTalkMapGenerator:
-    async def generate(self, input_kind: InputKind, input_text: str) -> TalkMap:
-        title = input_text.splitlines()[0][:80].strip().rstrip(".") or "Speaking practice"
-        concepts = [
-            part.strip() for part in input_text.replace("\n", ",").split(",") if part.strip()
-        ]
-        while len(concepts) < 3:
-            concepts.append(["context", "main idea", "result"][len(concepts)])
-        concepts = concepts[:4]
-        labels = ["What it is", "Why it matters", "How it works", "What I learned"]
-        nodes = [
-            TalkMapNode(
-                id=f"node-{index + 1}",
-                title=labels[index],
-                intent=f"Explain {concept}",
-                keywords=[concept],
-                semantic_summary=f"The speaker explains {concept}.",
-                starter=f"The {concept} is basically...",
-                next_prompt=f"Continue with {concept}.",
-            )
-            for index, concept in enumerate(concepts)
-        ]
-
-        return TalkMap(title=title, nodes=nodes)
-
-
-class DeterministicHintGenerator:
-    async def generate_hint(
-        self,
-        talk_map: TalkMap,
-        active_index: int,
-        recent_transcript: str,
-        covered_keywords: Sequence[str],
-        previous_hints: Sequence[str],
-    ) -> Hint:
-        del recent_transcript, previous_hints
-        node = talk_map.nodes[active_index]
-        covered = {keyword.casefold().strip() for keyword in covered_keywords}
-        keyword = next(
-            (value for value in node.keywords if value.casefold().strip() not in covered),
-            node.keywords[-1] if node.keywords else None,
-        )
-        return Hint(
-            level=2,
-            keyword=keyword,
-            starter=node.starter,
-            next_idea=node.next_prompt or keyword,
-        )
-
-
-class DeterministicFeedbackGenerator:
-    async def generate_feedback(self, transcript: str, talk_map: TalkMap) -> Feedback:
-        covered_topics = ", ".join(node.title for node in talk_map.nodes[:3])
-        return Feedback(
-            summary=f"You explained your topic through {covered_topics}.",
-            strengths=[
-                "You completed a spoken explanation without relying on a full script.",
-                "Your recording created a clear starting point for practice.",
-            ],
-            improvements=[
-                "Add one concrete example to make the explanation easier to follow.",
-                "Use a short pause between ideas instead of filling every gap.",
-                "Practice the next transition until it feels natural.",
-            ],
-            examples=[
-                "Try: The main idea is...",
-                "Try: The reason this matters is...",
-            ],
-            next_practice=(
-                "Record the same explanation once more and focus on smoother transitions."
-            ),
         )

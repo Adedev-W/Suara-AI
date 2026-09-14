@@ -22,15 +22,76 @@ export function encodePcm(floatSamples: Float32Array, inputRate: number): ArrayB
 
 export type AudioPipeline = { flush: () => void; close: () => void }
 
-export async function connectAudioToSocket(
+export type AudioPipelineOptions = {
+  onPcmChunk: (chunk: ArrayBuffer) => void
+  onSpeechStarted: () => void
+  onStuck: () => void
+}
+
+const MIN_SPEECH_RMS = 0.015
+// Requiring 200 ms of activity prevents clicks and handling noise from rearming a hint episode.
+const REQUIRED_ACTIVE_CHUNKS = 2
+// Audio is evaluated in 100 ms chunks, so 15 silent chunks represent 1.5 seconds.
+const REQUIRED_SILENT_CHUNKS = 15
+
+type SpeechState = 'waiting' | 'speaking' | 'stuck'
+
+export class SpeechPauseDetector {
+  private state: SpeechState = 'waiting'
+  private activeChunks = 0
+  private silentChunks = 0
+  private readonly onSpeechStarted: () => void
+  private readonly onStuck: () => void
+
+  constructor(onSpeechStarted: () => void, onStuck: () => void) {
+    this.onSpeechStarted = onSpeechStarted
+    this.onStuck = onStuck
+  }
+
+  observe(rms: number): void {
+    if (rms >= MIN_SPEECH_RMS) {
+      this.silentChunks = 0
+      this.activeChunks += 1
+      if (this.activeChunks === REQUIRED_ACTIVE_CHUNKS) {
+        this.state = 'speaking'
+        this.onSpeechStarted()
+      }
+      return
+    }
+
+    this.activeChunks = 0
+    if (this.state !== 'speaking') return
+    this.silentChunks += 1
+    if (this.silentChunks >= REQUIRED_SILENT_CHUNKS) {
+      this.state = 'stuck'
+      this.onStuck()
+    }
+  }
+}
+
+async function loadAudioWorklet(context: AudioContext): Promise<void> {
+  const sourceUrl = URL.createObjectURL(
+    new Blob([workletSource], { type: 'application/javascript' }),
+  )
+  try {
+    await context.audioWorklet.addModule(sourceUrl)
+  } finally {
+    URL.revokeObjectURL(sourceUrl)
+  }
+}
+
+export async function createAudioPipeline(
   stream: MediaStream,
-  socket: WebSocket,
+  options: AudioPipelineOptions,
 ): Promise<AudioPipeline> {
   const context = new AudioContext()
-  await context.resume()
-  const sourceUrl = URL.createObjectURL(new Blob([workletSource], { type: 'application/javascript' }))
-  await context.audioWorklet.addModule(sourceUrl)
-  URL.revokeObjectURL(sourceUrl)
+  try {
+    await context.resume()
+    await loadAudioWorklet(context)
+  } catch (cause) {
+    void context.close()
+    throw cause
+  }
 
   const source = context.createMediaStreamSource(stream)
   const node = new AudioWorkletNode(context, 'suaraai-pcm')
@@ -39,9 +100,13 @@ export async function connectAudioToSocket(
   const samplesPerChunk = Math.max(1, Math.round(context.sampleRate * 0.1))
   let pending = new Float32Array(samplesPerChunk)
   let pendingLength = 0
+  const speechDetector = new SpeechPauseDetector(options.onSpeechStarted, options.onStuck)
 
   const send = (samples: Float32Array) => {
-    if (socket.readyState === WebSocket.OPEN) socket.send(encodePcm(samples, context.sampleRate))
+    const sumOfSquares = samples.reduce((total, sample) => total + sample * sample, 0)
+    const rms = Math.sqrt(sumOfSquares / Math.max(1, samples.length))
+    speechDetector.observe(rms)
+    options.onPcmChunk(encodePcm(samples, context.sampleRate))
   }
   const append = (samples: Float32Array) => {
     let offset = 0

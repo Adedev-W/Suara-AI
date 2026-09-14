@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import StrEnum
+from typing import Literal
 from uuid import UUID, uuid4
 
 
@@ -9,13 +10,6 @@ class NodeStatus(StrEnum):
     UPCOMING = "upcoming"
     ACTIVE = "active"
     COVERED = "covered"
-
-
-class FlowState(StrEnum):
-    FLOWING = "FLOWING"
-    HESITATING = "HESITATING"
-    STUCK = "STUCK"
-    RECOVERED = "RECOVERED"
 
 
 class InputKind(StrEnum):
@@ -72,23 +66,11 @@ class Session:
 
 @dataclass(frozen=True, slots=True)
 class Hint:
-    level: int
-    keyword: str | None
-    starter: str | None
-    next_idea: str | None
-    source: str = "deterministic"
-
-
-@dataclass(frozen=True, slots=True)
-class FlowObservation:
-    silence_ms: int
-    filler_density: float
-    repetition_score: float
-    semantic_progress: float
-    active_node_complete: bool
-    meaningful_speech_resumed: bool = False
-    manual_hint_requested: bool = False
-    recently_completed_section: bool = False
+    level: Literal[2, 3]
+    keyword: str
+    starter: str
+    next_idea: str
+    source: Literal["ai", "deterministic"] = "deterministic"
 
 
 @dataclass(frozen=True, slots=True)

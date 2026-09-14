@@ -9,15 +9,17 @@ from suaraai.application.ports import FeedbackGenerator, QuestionAnswerer, Sessi
 from suaraai.application.repositories import InMemorySessionRepository
 from suaraai.application.session import (
     CompleteSession,
-    DeterministicFeedbackGenerator,
-    DeterministicHintGenerator,
-    DeterministicTalkMapGenerator,
     GenerateHint,
     PrepareSession,
     UpdateTalkMap,
 )
 from suaraai.infrastructure.assemblyai import AssemblyAISpeechTokenService
 from suaraai.infrastructure.database import PostgresSessionRepository
+from suaraai.infrastructure.deterministic import (
+    DeterministicFeedbackGenerator,
+    DeterministicHintGenerator,
+    DeterministicTalkMapGenerator,
+)
 from suaraai.infrastructure.documents import LocalDocumentParser
 from suaraai.infrastructure.embeddings import LocalEmbeddingService
 from suaraai.infrastructure.hint_generator import ResilientHintGenerator

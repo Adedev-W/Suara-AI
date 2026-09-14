@@ -4,7 +4,7 @@ import json
 import logging
 import re
 from collections.abc import Callable, Sequence
-from typing import TypeVar, cast
+from typing import Literal, TypeVar, cast
 
 import httpx
 
@@ -42,14 +42,16 @@ class AssemblyAILlmGateway:
         self._model = model
         self._base_url = base_url.rstrip("/")
         self._fallback_model = fallback_model
-        self._timeout = timeout_seconds
+        self._timeout_seconds = timeout_seconds
 
     async def generate(self, input_kind: InputKind, input_text: str) -> TalkMap:
         return await self._structured_completion(
             system=(
                 "You create a lightweight Talk Map for an English speaking practice session. "
-                "Return 3 to 7 nodes. Describe concepts rather than a script. Keep titles "
-                "short, sentence starters generic, and next prompts concise."
+                "Read all supplied material before outlining it, including long input. Return "
+                "3 to 7 ordered nodes that cover its central ideas without inventing facts. "
+                "Use simple English, describe concepts rather than a script, provide 2 to 5 "
+                "short keywords per node, and keep starters and prompts to one short sentence."
             ),
             user=(
                 f"<input_kind>{input_kind.value}</input_kind>\n"
@@ -99,6 +101,7 @@ class AssemblyAILlmGateway:
                 "You provide one concise rescue cue for a beginner or intermediate English "
                 "speaker who is stuck while explaining a topic. Follow the active Talk Map "
                 "node and recent spoken context. Do not write a script, paragraph, or answer. "
+                "Use simple English and keep the starter and next idea under 12 words each. "
                 "Make the cue sound natural and different from previous cues."
             ),
             user=(
@@ -122,6 +125,7 @@ class AssemblyAILlmGateway:
             schema=HINT_SCHEMA,
             parser=_parse_hint,
             max_tokens=320,
+            timeout_seconds=3.0,
         )
 
     async def answer(self, question: str, context: Sequence[RetrievedChunk]) -> str:
@@ -149,6 +153,7 @@ class AssemblyAILlmGateway:
         schema: dict[str, object],
         parser: Callable[[dict[str, object]], T],
         max_tokens: int = 1400,
+        timeout_seconds: float | None = None,
     ) -> T:
         structured_system = _structured_system_prompt(system, name, schema)
         validation_error = "the previous response did not satisfy the JSON contract"
@@ -161,6 +166,7 @@ class AssemblyAILlmGateway:
                 user=user,
                 post_process_json=True,
                 max_tokens=max_tokens,
+                timeout_seconds=timeout_seconds,
             )
             try:
                 return parser(_parse_json_object(content))
@@ -181,6 +187,7 @@ class AssemblyAILlmGateway:
         user: str,
         post_process_json: bool = False,
         max_tokens: int = 1400,
+        timeout_seconds: float | None = None,
     ) -> str:
         if not self._api_key:
             raise LlmGatewayError("LLM Gateway is not configured")
@@ -197,15 +204,16 @@ class AssemblyAILlmGateway:
         if post_process_json:
             body["post_processing_steps"] = [{"type": "json-repair"}]
         headers = {"authorization": self._api_key, "content-type": "application/json"}
+        request_timeout = timeout_seconds or self._timeout_seconds
         try:
-            async with httpx.AsyncClient(timeout=self._timeout) as client:
+            async with httpx.AsyncClient(timeout=request_timeout) as client:
                 response = await client.post(
                     f"{self._base_url}/chat/completions", headers=headers, json=body
                 )
                 response.raise_for_status()
         except httpx.TimeoutException as exc:
             raise LlmGatewayError(
-                f"LLM Gateway request timed out after {self._timeout:g} seconds"
+                f"LLM Gateway request timed out after {request_timeout:g} seconds"
             ) from exc
         except httpx.HTTPStatusError as exc:
             public_message, diagnostic_message = _format_provider_http_error(exc.response)
@@ -241,7 +249,7 @@ class AssemblyAILlmGateway:
 TALK_MAP_SCHEMA: dict[str, object] = {
     "type": "object",
     "properties": {
-        "title": {"type": "string"},
+        "title": {"type": "string", "minLength": 1, "maxLength": 160},
         "nodes": {
             "type": "array",
             "minItems": 3,
@@ -249,16 +257,17 @@ TALK_MAP_SCHEMA: dict[str, object] = {
             "items": {
                 "type": "object",
                 "properties": {
-                    "title": {"type": "string"},
-                    "intent": {"type": "string"},
+                    "title": {"type": "string", "minLength": 1, "maxLength": 120},
+                    "intent": {"type": "string", "minLength": 1, "maxLength": 240},
                     "keywords": {
                         "type": "array",
                         "minItems": 1,
-                        "items": {"type": "string"},
+                        "maxItems": 12,
+                        "items": {"type": "string", "minLength": 1, "maxLength": 120},
                     },
-                    "semantic_summary": {"type": "string"},
-                    "starter": {"type": "string"},
-                    "next_prompt": {"type": "string"},
+                    "semantic_summary": {"type": "string", "minLength": 1, "maxLength": 500},
+                    "starter": {"type": "string", "minLength": 1, "maxLength": 240},
+                    "next_prompt": {"type": "string", "minLength": 1, "maxLength": 240},
                 },
                 "required": [
                     "title",
@@ -297,9 +306,9 @@ HINT_SCHEMA: dict[str, object] = {
     "type": "object",
     "properties": {
         "level": {"type": "integer", "enum": [2, 3]},
-        "keyword": {"type": "string"},
-        "starter": {"type": "string"},
-        "next_idea": {"type": "string"},
+        "keyword": {"type": "string", "minLength": 1, "maxLength": 240},
+        "starter": {"type": "string", "minLength": 1, "maxLength": 240},
+        "next_idea": {"type": "string", "minLength": 1, "maxLength": 240},
     },
     "required": ["level", "keyword", "starter", "next_idea"],
     "additionalProperties": False,
@@ -548,7 +557,7 @@ def _with_request_id(message: str, request_id: str | None) -> str:
 
 
 def _parse_talk_map(payload: dict[str, object]) -> TalkMap:
-    title = _required_string(payload, "title")
+    title = _required_bounded_string(payload, "title", 160)
     raw_nodes = payload.get("nodes")
     if not isinstance(raw_nodes, list) or not 3 <= len(raw_nodes) <= 7:
         raise LlmGatewayError("Generated Talk Map must contain between 3 and 7 nodes")
@@ -559,12 +568,12 @@ def _parse_talk_map(payload: dict[str, object]) -> TalkMap:
         nodes.append(
             TalkMapNode(
                 id=f"node-{index + 1}",
-                title=_required_string(raw_node, "title"),
-                intent=_required_string(raw_node, "intent"),
-                keywords=_required_string_list(raw_node, "keywords"),
-                semantic_summary=_required_string(raw_node, "semantic_summary"),
-                starter=_required_string(raw_node, "starter"),
-                next_prompt=_required_string(raw_node, "next_prompt"),
+                title=_required_bounded_string(raw_node, "title", 120),
+                intent=_required_bounded_string(raw_node, "intent", 240),
+                keywords=_required_bounded_string_list(raw_node, "keywords", 12, 120),
+                semantic_summary=_required_bounded_string(raw_node, "semantic_summary", 500),
+                starter=_required_bounded_string(raw_node, "starter", 240),
+                next_prompt=_required_bounded_string(raw_node, "next_prompt", 240),
             )
         )
     return TalkMap(title=title, nodes=nodes)
@@ -581,14 +590,15 @@ def _parse_feedback(payload: dict[str, object]) -> Feedback:
 
 
 def _parse_hint(payload: dict[str, object]) -> Hint:
-    level = payload.get("level")
-    if not isinstance(level, int) or isinstance(level, bool) or level not in {2, 3}:
+    raw_level = payload.get("level")
+    if not isinstance(raw_level, int) or isinstance(raw_level, bool) or raw_level not in {2, 3}:
         raise LlmGatewayError("LLM Gateway field 'level' must be 2 or 3")
+    level: Literal[2, 3] = 2 if raw_level == 2 else 3
     return Hint(
         level=level,
-        keyword=_required_string(payload, "keyword"),
-        starter=_required_string(payload, "starter"),
-        next_idea=_required_string(payload, "next_idea"),
+        keyword=_required_bounded_string(payload, "keyword", 240),
+        starter=_required_bounded_string(payload, "starter", 240),
+        next_idea=_required_bounded_string(payload, "next_idea", 240),
         source="ai",
     )
 
@@ -630,6 +640,13 @@ def _required_string(data: dict[str, object], key: str) -> str:
     return value.strip()
 
 
+def _required_bounded_string(data: dict[str, object], key: str, max_length: int) -> str:
+    value = _required_string(data, key)
+    if len(value) > max_length:
+        raise LlmGatewayError(f"LLM Gateway field {key!r} exceeds the {max_length}-character limit")
+    return value
+
+
 def _string_list(data: dict[str, object], key: str) -> list[str]:
     value = data.get(key)
     if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
@@ -641,4 +658,20 @@ def _required_string_list(data: dict[str, object], key: str) -> list[str]:
     values = _string_list(data, key)
     if not values:
         raise LlmGatewayError(f"LLM Gateway field {key!r} must contain text")
+    return values
+
+
+def _required_bounded_string_list(
+    data: dict[str, object],
+    key: str,
+    max_items: int,
+    max_item_length: int,
+) -> list[str]:
+    values = _required_string_list(data, key)
+    if len(values) > max_items:
+        raise LlmGatewayError(f"LLM Gateway field {key!r} contains too many items")
+    if any(len(value) > max_item_length for value in values):
+        raise LlmGatewayError(
+            f"LLM Gateway field {key!r} contains text longer than {max_item_length} characters"
+        )
     return values

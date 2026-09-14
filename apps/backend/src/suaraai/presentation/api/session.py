@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-from typing import Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Header, HTTPException, status
@@ -112,15 +111,12 @@ def create_session_router(
         except LlmGatewayError as exc:
             logger.info("Realtime hint generation unavailable: %s", exc.diagnostic_message)
             raise HTTPException(status_code=502, detail=str(exc)) from exc
-        source: Literal["ai", "deterministic"] = (
-            "ai" if generated.source == "ai" else "deterministic"
-        )
         return HintResponse(
             level=generated.level,
             keyword=generated.keyword,
             starter=generated.starter,
             next_idea=generated.next_idea,
-            source=source,
+            source=generated.source,
         )
 
     return router

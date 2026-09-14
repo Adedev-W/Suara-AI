@@ -26,7 +26,7 @@ class HealthResponse(BaseModel):
 
 
 class TalkMapNodePayload(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
     id: str | None = None
     title: str = Field(min_length=1, max_length=120)
@@ -37,12 +37,22 @@ class TalkMapNodePayload(BaseModel):
     next_prompt: str = Field(min_length=1, max_length=240)
     status: NodeStatus = NodeStatus.UPCOMING
 
+    @field_validator("keywords")
+    @classmethod
+    def validate_keywords(cls, values: list[str]) -> list[str]:
+        cleaned = [value.strip() for value in values]
+        if any(not value for value in cleaned):
+            raise ValueError("Talk Map keywords must contain text")
+        if any(len(value) > 120 for value in cleaned):
+            raise ValueError("Talk Map keywords must not exceed 120 characters")
+        return cleaned
+
     def to_domain(self, index: int) -> TalkMapNode:
         return TalkMapNode(
             id=self.id or f"node-{index + 1}",
             title=self.title.strip(),
             intent=self.intent.strip(),
-            keywords=[keyword.strip() for keyword in self.keywords if keyword.strip()],
+            keywords=self.keywords,
             semantic_summary=self.semantic_summary.strip(),
             starter=self.starter.strip(),
             next_prompt=self.next_prompt.strip(),
@@ -51,7 +61,7 @@ class TalkMapNodePayload(BaseModel):
 
 
 class TalkMapPayload(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
     title: str = Field(min_length=1, max_length=160)
     nodes: list[TalkMapNodePayload] = Field(min_length=3, max_length=7)
@@ -108,10 +118,10 @@ class RealtimeHintRequest(BaseModel):
 
 
 class HintResponse(BaseModel):
-    level: int = Field(ge=2, le=3)
-    keyword: str | None = Field(default=None, max_length=240)
-    starter: str | None = Field(default=None, max_length=240)
-    next_idea: str | None = Field(default=None, max_length=240)
+    level: Literal[2, 3]
+    keyword: str = Field(min_length=1, max_length=240)
+    starter: str = Field(min_length=1, max_length=240)
+    next_idea: str = Field(min_length=1, max_length=240)
     source: Literal["ai", "deterministic"]
 
 

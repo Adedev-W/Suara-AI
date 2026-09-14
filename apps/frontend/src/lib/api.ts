@@ -1,7 +1,6 @@
 import type { Feedback, Hint, InputKind, Session, StateEvent } from '../domain/types'
 
 const apiBaseUrl = (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? '/api/v1'
-const REALTIME_HINT_TIMEOUT_MS = 4000
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const headers = new Headers(options.headers)
@@ -48,36 +47,31 @@ export async function requestRealtimeHint(
     coveredKeywords: string[]
     previousHints: string[]
   },
+  signal?: AbortSignal,
 ): Promise<Hint> {
-  const controller = new AbortController()
-  const timeout = window.setTimeout(() => controller.abort(), REALTIME_HINT_TIMEOUT_MS)
-  try {
-    const result = await request<{
-      level: 2 | 3
-      keyword: string | null
-      starter: string | null
-      next_idea: string | null
-      source: 'ai' | 'deterministic'
-    }>(`/session/${session.session_id}/hint`, {
-      method: 'POST',
-      headers: { 'X-Session-Token': session.access_token },
-      body: JSON.stringify({
-        active_index: input.activeIndex,
-        recent_transcript: input.recentTranscript,
-        covered_keywords: input.coveredKeywords,
-        previous_hints: input.previousHints,
-      }),
-      signal: controller.signal,
-    })
-    return {
-      level: result.level,
-      keyword: result.keyword ?? undefined,
-      starter: result.starter ?? undefined,
-      nextIdea: result.next_idea ?? undefined,
-      source: result.source,
-    }
-  } finally {
-    window.clearTimeout(timeout)
+  const result = await request<{
+    level: 2 | 3
+    keyword: string
+    starter: string
+    next_idea: string
+    source: 'ai' | 'deterministic'
+  }>(`/session/${session.session_id}/hint`, {
+    method: 'POST',
+    headers: { 'X-Session-Token': session.access_token },
+    body: JSON.stringify({
+      active_index: input.activeIndex,
+      recent_transcript: input.recentTranscript,
+      covered_keywords: input.coveredKeywords,
+      previous_hints: input.previousHints,
+    }),
+    signal,
+  })
+  return {
+    level: result.level,
+    keyword: result.keyword,
+    starter: result.starter,
+    nextIdea: result.next_idea,
+    source: result.source,
   }
 }
 

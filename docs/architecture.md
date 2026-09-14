@@ -9,8 +9,8 @@ and post-recording generation.
 ## Backend boundaries
 
 `domain` contains the vocabulary shared by the use cases: sessions, Talk Map
-nodes, flow states, feedback, and knowledge chunks. It has no framework or
-provider imports.
+nodes, hints, feedback, and knowledge chunks. It has no framework or provider
+imports.
 
 `application` contains the use cases and ports:
 
@@ -20,13 +20,16 @@ provider imports.
   feedback generator for structured practice advice.
 - `KnowledgeService` parses, chunks, embeds, stores, retrieves, and answers
   questions within one session.
-- `flow.py` contains deterministic matching, progress, filler, repetition, and
-  stuck-state rules so realtime assistance does not depend on an LLM round trip.
 
 `infrastructure` implements the ports. The default production path uses the
 AssemblyAI LLM Gateway, AssemblyAI temporary STT tokens, PostgreSQL/pgvector,
-and the local FastEmbed model. A deterministic Talk Map and feedback provider
-keeps the setup flow usable when no AssemblyAI key is configured.
+and the local FastEmbed model. Deterministic Talk Map, hint, and feedback
+adapters keep the core flow usable when no AssemblyAI key is configured.
+
+The browser owns speaking progress and pause detection. A pure recording
+reducer advances the Talk Map from finalized STT turns, while a local audio
+state machine detects speech and a 1.5-second pause independently of provider
+latency.
 
 `presentation` translates HTTP requests and provider failures into validated
 JSON responses. It does not contain matching or persistence rules.
@@ -56,7 +59,7 @@ schema must be migrated deliberately.
 ## Provider failure boundaries
 
 AssemblyAI and LLM Gateway errors are converted into application errors. A
-failure to obtain a realtime token does not prevent the browser from keeping a
-local recording; the UI reports that live assistance is unavailable and still
-allows review. Document parsing and embedding failures stop that upload and do
-not create partial chunks.
+failure to obtain a realtime token does not prevent local recording or local
+pause guidance; only the transcript is unavailable. Audio initialization
+failure still leaves recording and manual hints available. Document parsing
+and embedding failures stop that upload and do not create partial chunks.

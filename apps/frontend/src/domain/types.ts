@@ -1,6 +1,6 @@
 export type InputKind = 'topic' | 'notes' | 'key_points'
 export type NodeStatus = 'upcoming' | 'active' | 'covered'
-export type FlowState = 'FLOWING' | 'HESITATING' | 'STUCK' | 'RECOVERED'
+export type FlowState = 'FLOWING' | 'STUCK'
 
 export type TalkMapNode = {
   id: string
@@ -45,9 +45,9 @@ export type SttTurn = {
 }
 
 export type Hint = {
-  level: 1 | 2 | 3
-  keyword?: string
-  starter?: string
-  nextIdea?: string
-  source?: 'ai' | 'deterministic'
+  level: 2 | 3
+  keyword: string
+  starter: string
+  nextIdea: string
+  source: 'ai' | 'deterministic'
 }
