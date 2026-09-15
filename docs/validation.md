@@ -34,8 +34,13 @@ uses REST because the current backend exposes REST hint endpoints; AssemblyAI
 streaming WebSocket and browser media capture are separate frontend/provider
 paths and are not simulated by this text scenario.
 
-The frontend `test` command remains a TypeScript compilation smoke check because
-no runtime browser test dependency is currently installed.
+The frontend `test` command runs behavioral tests using Node 24+ and its built-in
+TypeScript stripping, in one process so individual cases appear in the report.
+No runtime test dependency is required. Tests exercise
+the transcript reducer, streaming parser, sample-based pause detector, and
+assistant controller with injected clocks and deferred provider responses.
+Type checking is separate. These tests do not exercise microphone hardware or
+browser layout.
 
 ## Manual acceptance
 
@@ -47,22 +52,44 @@ no runtime browser test dependency is currently installed.
 4. Start recording. Confirm the timer and listening status update in real time.
    Speak a sentence and confirm partial words appear in the Live transcript
    panel while you speak, then settle into the final transcript when the turn
-   completes. Confirm only the final turn updates the Talk Map.
+   completes. Confirm partial text already informs hints, and permanent Talk
+   Map position changes require an AI suggestion backed by final speech.
 5. Stay silent for more than 1.5 seconds before first speaking and confirm no
    automatic hint appears. Speak, pause for 1.4 seconds, and confirm no hint;
-   continue the pause beyond 1.5 seconds and confirm a Talk Map fallback appears
-   immediately without repeated network requests.
-6. Press Hint manually and confirm a cue appears without exposing a full script.
-   When an LLM key is configured, confirm a contextual cue can replace the
-   deterministic fallback. Resume before the response and confirm the old hint
-   fades and never returns. Pause again and confirm a new episode works without
-   a cooldown. When STT is unavailable, confirm local guidance and recording
-   continue.
+   continue an unfinished phrase's pause beyond 1.5 seconds and confirm a cached
+   AI or local candidate appears. After a complete sentence, confirm the delay
+   is 2.5 seconds. Repeat with quiet speech, short clicks and background noise;
+   noise without new recognized speech must not generate repeated blank events.
+6. Press Hint and confirm a readable continuation appears. AI-generated hints
+   and prepared candidates should contain 40–70 words. Confirm a fallback can
+   be replaced once within two seconds; then it stays stable. Resume speaking
+   and read along: the card must remain visible, and late AI responses must not
+   change its text. Dismiss the card and verify the next genuine blank can show
+   guidance. With STT disconnected, confirm recording and local 2.5-second
+   pause guidance continue. Legacy maps may retain short fallback prompts.
 7. Stop recording, play the local preview, and download the WebM recording.
-8. Request feedback and confirm the result includes strengths, improvements,
+   Open View conversation log and confirm a vertical timeline contains each
+   finalized utterance, every automatic blank with pause/detection times, and
+   the deterministic hint plus any accepted AI replacement. Confirm the close
+   button and Escape return to Preview, and Copy log places the same formatted
+   timeline on the clipboard. Confirm speech timestamps differ from transcript
+   arrival timestamps. Expand diagnostics to inspect provider latency, fallback,
+   timeout and stale-response decisions. Manual displays are not automatic hint
+   entries; their request diagnostics can still appear.
+8. Choose Record again and confirm the previous conversation log is cleared.
+9. Request feedback and confirm the result includes strengths, improvements,
    useful phrases, and a concrete next practice.
-9. Upload a text-bearing PDF or PPTX, ask a question about it, and confirm the
+10. Upload a text-bearing PDF or PPTX, ask a question about it, and confirm the
    answer includes retrieved source metadata. Uploading an unsupported type or
    unreadable document should return a controlled error.
-10. Open browser developer tools and confirm the long-lived AssemblyAI key is
+11. Open browser developer tools and confirm the long-lived AssemblyAI key is
     absent from frontend requests and storage.
+12. Replay the reported AI-topic example. After the user defines AI, the next
+    suggestion should explain a use or example instead of asking for the same
+    definition. Delay final transcripts and AI responses independently to test
+    stale-context rejection. Prefetch should remain limited to one request in
+    flight and one dispatch per three seconds.
+13. Measure at least 20 local/cache displays in an active tab. Target p95 under
+    100 ms from blank confirmation to visible card; log dispatch timing and
+    inspect browser paint timing separately. Do not count network generation
+    time as local display latency or claim this target from unit tests alone.

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import secrets
 from collections.abc import Sequence
+from dataclasses import replace
 from uuid import UUID
 
 from suaraai.application.ports import (
@@ -13,6 +14,7 @@ from suaraai.application.ports import (
 from suaraai.domain.copilot import (
     Feedback,
     Hint,
+    HintContext,
     InputKind,
     NodeStatus,
     Session,
@@ -117,6 +119,7 @@ class GenerateHint:
         recent_transcript: str,
         covered_keywords: list[str],
         previous_hints: list[str],
+        final_transcript: str = "",
     ) -> Hint:
         session = await self._repository.get(session_id, access_token)
         if session is None:
@@ -125,10 +128,20 @@ class GenerateHint:
             raise SessionInputError("A Talk Map is required before requesting a hint")
         if not 0 <= active_index < len(session.talk_map.nodes):
             raise SessionInputError("Active Talk Map index is out of range")
-        return await self._generator.generate_hint(
+        generated = await self._generator.generate_hint(
             session.talk_map,
             active_index,
             recent_transcript.strip(),
             covered_keywords,
             previous_hints,
+            HintContext(session.input_text, final_transcript),
         )
+        # A model suggestion cannot advance permanent progress without spoken evidence.
+        if generated.node_id not in {node.id for node in session.talk_map.nodes}:
+            generated = replace(generated, node_id=session.talk_map.nodes[active_index].id)
+        if (
+            not generated.evidence
+            or generated.evidence.casefold() not in final_transcript.casefold()
+        ):
+            generated = replace(generated, evidence="")
+        return generated

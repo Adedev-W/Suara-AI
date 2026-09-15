@@ -36,6 +36,14 @@ class TalkMapNodePayload(BaseModel):
     starter: str = Field(min_length=1, max_length=240)
     next_prompt: str = Field(min_length=1, max_length=240)
     status: NodeStatus = NodeStatus.UPCOMING
+    rescue_candidates: list[str] = Field(default_factory=list, max_length=3)
+
+    @field_validator("rescue_candidates")
+    @classmethod
+    def validate_candidates(cls, values: list[str]) -> list[str]:
+        if any(not text.strip() or len(text) > 1200 for text in values):
+            raise ValueError("Rescue candidates must contain 1 to 1200 characters")
+        return [text.strip() for text in values]
 
     @field_validator("keywords")
     @classmethod
@@ -57,6 +65,7 @@ class TalkMapNodePayload(BaseModel):
             starter=self.starter.strip(),
             next_prompt=self.next_prompt.strip(),
             status=self.status,
+            rescue_candidates=self.rescue_candidates,
         )
 
 
@@ -115,6 +124,15 @@ class RealtimeHintRequest(BaseModel):
     recent_transcript: str = Field(default="", max_length=6_000)
     covered_keywords: list[str] = Field(default_factory=list, max_length=100)
     previous_hints: list[str] = Field(default_factory=list, max_length=5)
+    final_transcript: str = Field(default="", max_length=6000)
+    context_id: str = Field(default="", max_length=160)
+
+    @field_validator("previous_hints", "covered_keywords")
+    @classmethod
+    def validate_context_items(cls, values: list[str]) -> list[str]:
+        if any(len(value) > 1200 for value in values):
+            raise ValueError("Context items must not exceed 1200 characters")
+        return values
 
 
 class HintResponse(BaseModel):
@@ -123,6 +141,11 @@ class HintResponse(BaseModel):
     starter: str = Field(min_length=1, max_length=240)
     next_idea: str = Field(min_length=1, max_length=240)
     source: Literal["ai", "deterministic"]
+    continuation: str = Field(default="", max_length=1200)
+    node_id: str = ""
+    evidence: str = Field(default="", max_length=600)
+    generation_status: str = "ready"
+    context_id: str = ""
 
 
 class SttTokenResponse(BaseModel):
@@ -208,6 +231,7 @@ def _talk_map_dict(talk_map: TalkMap) -> dict[str, object]:
                 "starter": node.starter,
                 "next_prompt": node.next_prompt,
                 "status": node.status,
+                "rescue_candidates": node.rescue_candidates,
             }
             for node in talk_map.nodes
         ],

@@ -1,52 +1,41 @@
 import { getSttToken } from './api'
-import type { SttTurn } from '../domain/types'
+import { parseSttMessage, type SttMessage } from './sttProtocol'
+export { parseSttMessage } from './sttProtocol'
 
-export async function openAssemblySocket(speechModel = 'universal-3-5-pro'): Promise<WebSocket> {
-  const tokenResponse = await getSttToken()
-  const token = tokenResponse.token
-  speechModel = tokenResponse.speech_model || speechModel
-  const params = new URLSearchParams({
-    token,
-    speech_model: speechModel,
-    sample_rate: '16000',
-    encoding: 'pcm_s16le',
-  })
-  const socket = new WebSocket(`wss://streaming.assemblyai.com/v3/ws?${params.toString()}`)
+export async function openAssemblySocket(onMessage: (message: SttMessage) => void): Promise<WebSocket> {
+  const controller = new AbortController()
+  const tokenTimeout = window.setTimeout(() => controller.abort(), 8000)
+  const { token, speech_model: speechModel } = await getSttToken(controller.signal)
+    .finally(() => window.clearTimeout(tokenTimeout))
+  const params = new URLSearchParams({ token, speech_model: speechModel,
+    sample_rate: '16000', encoding: 'pcm_s16le', min_turn_silence: '128', max_turn_silence: '800' })
+  if (speechModel === 'universal-3-5-pro') {
+    params.set('mode', 'balanced')
+    params.set('continuous_partials', 'true')
+  }
+  const socket = new WebSocket(`wss://streaming.assemblyai.com/v3/ws?${params}`)
   try {
     await new Promise<void>((resolve, reject) => {
-      socket.addEventListener('open', () => resolve(), { once: true })
-      socket.addEventListener(
-        'error',
-        () => reject(new Error('Could not connect to speech transcription.')),
-        { once: true },
-      )
-      socket.addEventListener(
-        'close',
-        () => reject(new Error('Speech transcription closed before it connected.')),
-        { once: true },
-      )
+      const timeout = window.setTimeout(() => fail(new Error('Speech initialization timed out.')), 8000)
+      const fail = (error: Error) => { window.clearTimeout(timeout); reject(error) }
+      socket.onmessage = (event) => {
+        const message = parseSttMessage(String(event.data))
+        if (!message) return
+        if (message.type === 'Begin') {
+          if (message.model && message.model !== speechModel) {
+            fail(new Error('Speech service selected an unexpected model.'))
+            socket.close()
+            return
+          }
+          window.clearTimeout(timeout)
+          resolve()
+        }
+        if (message.type === 'Error') fail(new Error(message.detail))
+        onMessage(message)
+      }
+      socket.addEventListener('error', () => fail(new Error('Speech connection failed.')), { once: true })
+      socket.addEventListener('close', () => fail(new Error('Speech connection closed.')), { once: true })
     })
     return socket
-  } catch (cause) {
-    socket.close()
-    throw cause
-  }
-}
-
-export function parseSttMessage(data: string): SttTurn | null {
-  try {
-    const message = JSON.parse(data) as {
-      type?: unknown
-      transcript?: unknown
-      end_of_turn?: unknown
-    }
-    if (message.type !== 'Turn') return null
-    return {
-      type: 'Turn',
-      transcript: typeof message.transcript === 'string' ? message.transcript : '',
-      isFinal: message.end_of_turn === true,
-    }
-  } catch {
-    return null
-  }
+  } catch (cause) { socket.close(); throw cause }
 }

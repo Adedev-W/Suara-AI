@@ -31,12 +31,12 @@ export function updateTalkMap(session: Session) {
   })
 }
 
-export async function getSttToken() {
+export async function getSttToken(signal?: AbortSignal) {
   return request<{
     token: string
     expires_in_seconds: number
     speech_model: string
-  }>('/stt/token', { method: 'POST' })
+  }>('/stt/token', { method: 'POST', signal })
 }
 
 export async function requestRealtimeHint(
@@ -46,6 +46,8 @@ export async function requestRealtimeHint(
     recentTranscript: string
     coveredKeywords: string[]
     previousHints: string[]
+    finalTranscript: string
+    contextId: string
   },
   signal?: AbortSignal,
 ): Promise<Hint> {
@@ -55,6 +57,11 @@ export async function requestRealtimeHint(
     starter: string
     next_idea: string
     source: 'ai' | 'deterministic'
+    continuation: string
+    node_id: string
+    evidence: string
+    generation_status: string
+    context_id: string
   }>(`/session/${session.session_id}/hint`, {
     method: 'POST',
     headers: { 'X-Session-Token': session.access_token },
@@ -63,6 +70,8 @@ export async function requestRealtimeHint(
       recent_transcript: input.recentTranscript,
       covered_keywords: input.coveredKeywords,
       previous_hints: input.previousHints,
+      final_transcript: input.finalTranscript,
+      context_id: input.contextId,
     }),
     signal,
   })
@@ -72,6 +81,11 @@ export async function requestRealtimeHint(
     starter: result.starter,
     nextIdea: result.next_idea,
     source: result.source,
+    continuation: result.continuation,
+    nodeId: result.node_id,
+    evidence: result.evidence,
+    generationStatus: result.generation_status,
+    contextId: result.context_id,
   }
 }
 

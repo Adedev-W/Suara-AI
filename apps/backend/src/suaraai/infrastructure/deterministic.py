@@ -4,7 +4,7 @@ import re
 from collections.abc import Sequence
 from math import ceil
 
-from suaraai.domain.copilot import Feedback, Hint, InputKind, TalkMap, TalkMapNode
+from suaraai.domain.copilot import Feedback, Hint, HintContext, InputKind, TalkMap, TalkMapNode
 
 
 class DeterministicTalkMapGenerator:
@@ -57,8 +57,9 @@ class DeterministicHintGenerator:
         recent_transcript: str,
         covered_keywords: Sequence[str],
         previous_hints: Sequence[str],
+        context: HintContext | None = None,
     ) -> Hint:
-        del recent_transcript, previous_hints
+        del context
         node = talk_map.nodes[active_index]
         covered = {keyword.casefold().strip() for keyword in covered_keywords}
         keyword = next(
@@ -70,6 +71,16 @@ class DeterministicHintGenerator:
             keyword=keyword,
             starter=node.starter,
             next_idea=node.next_prompt,
+            continuation=next(
+                (
+                    text
+                    for text in node.rescue_candidates
+                    if text not in previous_hints and text not in recent_transcript
+                ),
+                "",
+            ),
+            node_id=node.id,
+            generation_status="local_fallback",
         )
 
 

@@ -1,5 +1,5 @@
 import type { TalkMap } from '../domain/types'
-import { words } from './flow'
+import { words } from './flow.ts'
 
 export function findActiveNode(
   talkMap: TalkMap,

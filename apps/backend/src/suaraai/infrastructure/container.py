@@ -25,6 +25,7 @@ from suaraai.infrastructure.embeddings import LocalEmbeddingService
 from suaraai.infrastructure.hint_generator import ResilientHintGenerator
 from suaraai.infrastructure.llm_gateway import AssemblyAILlmGateway
 from suaraai.infrastructure.settings import Settings
+from suaraai.infrastructure.talk_map_generator import ResilientTalkMapGenerator
 
 
 @dataclass(slots=True)
@@ -54,7 +55,11 @@ def create_services(
         base_url=settings.llm_gateway_base_url,
         fallback_model=settings.llm_fallback_model,
     )
-    generator = gateway if settings.assemblyai_api_key else DeterministicTalkMapGenerator()
+    generator = (
+        ResilientTalkMapGenerator(gateway, DeterministicTalkMapGenerator())
+        if settings.assemblyai_api_key
+        else DeterministicTalkMapGenerator()
+    )
     feedback_generator: FeedbackGenerator = (
         gateway if settings.assemblyai_api_key else DeterministicFeedbackGenerator()
     )

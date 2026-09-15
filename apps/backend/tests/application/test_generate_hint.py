@@ -6,7 +6,7 @@ from collections.abc import Sequence
 from suaraai.application.ports import HintGenerator
 from suaraai.application.repositories import InMemorySessionRepository
 from suaraai.application.session import GenerateHint, PrepareSession
-from suaraai.domain.copilot import Hint, InputKind, Session, TalkMap
+from suaraai.domain.copilot import Hint, HintContext, InputKind, Session, TalkMap
 from suaraai.infrastructure.deterministic import (
     DeterministicHintGenerator,
     DeterministicTalkMapGenerator,
@@ -26,6 +26,7 @@ class _SuccessfulHintGenerator:
         recent_transcript: str,
         covered_keywords: Sequence[str],
         previous_hints: Sequence[str],
+        context: HintContext | None = None,
     ) -> Hint:
         del talk_map
         self.calls.append(
@@ -48,6 +49,7 @@ class _FailingHintGenerator:
         recent_transcript: str,
         covered_keywords: Sequence[str],
         previous_hints: Sequence[str],
+        context: HintContext | None = None,
     ) -> Hint:
         del talk_map, active_index, recent_transcript, covered_keywords, previous_hints
         raise LlmGatewayError("provider timed out")

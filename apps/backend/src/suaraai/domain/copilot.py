@@ -28,6 +28,7 @@ class TalkMapNode:
     starter: str
     next_prompt: str
     status: NodeStatus = NodeStatus.UPCOMING
+    rescue_candidates: list[str] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -71,6 +72,16 @@ class Hint:
     starter: str
     next_idea: str
     source: Literal["ai", "deterministic"] = "deterministic"
+    continuation: str = ""
+    node_id: str = ""
+    evidence: str = ""
+    generation_status: str = "ready"
+
+
+@dataclass(frozen=True, slots=True)
+class HintContext:
+    source_material: str = ""
+    final_transcript: str = ""
 
 
 @dataclass(frozen=True, slots=True)

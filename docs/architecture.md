@@ -26,10 +26,17 @@ AssemblyAI LLM Gateway, AssemblyAI temporary STT tokens, PostgreSQL/pgvector,
 and the local FastEmbed model. Deterministic Talk Map, hint, and feedback
 adapters keep the core flow usable when no AssemblyAI key is configured.
 
-The browser owns speaking progress and pause detection. A pure recording
-reducer advances the Talk Map from finalized STT turns, while a local audio
-state machine detects speech and a 1.5-second pause independently of provider
-latency.
+The browser owns sample-based pause detection, a revision-aware transcript
+reducer, and an independently testable assistant controller. Final and partial
+turns share one canonical turn store. AI node suggestions require quoted final
+speech evidence before changing permanent map position; keyword hits no longer
+count as proof that a section is complete. Showing a hint never marks it covered.
+
+The controller separates preparation, request deadlines, pause episodes and
+reading visibility. The browser-local conversation timeline includes diagnostic
+details; compact diagnostic state events are also sent with feedback. Original
+session material enters the hint generator through a domain context object.
+Optional candidate fields in stored JSON keep older sessions readable.
 
 `presentation` translates HTTP requests and provider failures into validated
 JSON responses. It does not contain matching or persistence rules.

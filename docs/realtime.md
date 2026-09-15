@@ -1,55 +1,83 @@
 # Realtime recording path
 
-The browser requests `POST /api/v1/stt/token` immediately after recording
-starts. The backend creates a short-lived AssemblyAI streaming token with the
-server-side API key and returns the configured speech model. The browser then
-opens the AssemblyAI v3 WebSocket and sends the temporary token in the query
-string.
+AudioWorklet captures microphone samples and sends 50 ms PCM16 chunks at 16 kHz.
+The same samples feed an adaptive RMS/hysteresis detector. Pause duration uses
+sample counts rather than JavaScript callback cadence. Provider word offsets
+are anchored to the captured stream's start; arrival time is recorded separately.
 
-Audio uses the browser's `AudioWorklet` to read microphone samples, resamples
-them to 16 kHz, encodes little-endian signed PCM16, and emits roughly 100 ms
-chunks. The same chunks provide browser-local voice activity before they are
-sent to AssemblyAI. Two consecutive chunks above the speech threshold count as
-voice activity. AssemblyAI partial turns update the visible rolling transcript
-while the speaker is talking. Only final turns update the canonical transcript,
-Talk Map, and hint context; they do not control the silence clock, so a delayed
-final turn cannot dismiss a valid rescue cue. The camera and microphone stream
-also feeds `MediaRecorder`, so preview and download remain local.
+The client waits for AssemblyAI's Begin message before reporting Listening.
+For universal-3-5-pro it explicitly selects balanced mode, continuous partials,
+128 ms minimum turn silence and 800 ms maximum turn silence. Provider endpoints
+finalize text; they do not decide when a help card should appear. Up to ten
+seconds of startup audio are retained in order. Overflow disables transcription
+with a diagnostic rather than dropping earlier frames and corrupting timestamps.
+Token issuance and socket initialization each have an eight-second timeout.
 
-The assistance lifecycle is intentionally deterministic:
+## Speech and context
 
-- `FLOWING`: the microphone is receiving speech and no intervention is needed.
-- `STUCK`: after speech has started, 1.5 seconds without local voice activity
-  produces a starter phrase and next idea.
+Turn messages replace previous content for their turn_order. Finalized turns
+cannot be overwritten by late partials, and duplicate finals do not duplicate
+the transcript or conversation log. The rolling hint context includes final and
+partial text (up to 6,000 characters); preview and feedback use final text only.
 
-Local voice activity moves `STUCK` directly back to `FLOWING` and dismisses the
-cue. The previous cue stays mounted only long enough for its CSS opacity
-transition; it is already inactive and hidden from assistive technology.
+Local activity requires 200 ms above an adaptive threshold. While STT is online,
+a new automatic blank also requires new provider-confirmed speech. Late final
+messages from an earlier pause cannot rearm noise-only episodes. Initial silence
+does not display hints. Once armed, a hanging phrase waits 1,500 ms; terminal
+punctuation waits 2,500 ms, except trailing connectives such as “because”.
+This is a timing heuristic, not a reliable inference of the speaker's intentions.
+When STT fails, local audio guidance uses a conservative 2,500 ms pause.
 
-No automatic hint appears before the first detected speech. A stuck episode
-remains stable during continued silence and sends at most one AI request. Voice
-activity aborts that request, fades the cue, and arms a fresh 1.5-second episode
-without a cooldown. A manual Hint button uses the same fallback and request
-lifecycle. Talk Map matching still advances only when the next node's keyword
-score clears the current node by a margin.
+## Preparing and displaying hints
 
-The browser keeps the complete final transcript for preview and feedback, plus
-a bounded rolling final-transcript context for hint requests. The recording UI
-shows the latest roughly 1,800 characters and the current partial turn in a
-separate subdued style. Covered concepts accumulate for the active Talk Map
-node, and a node requires evidence across more than one finalized observation
-before it is marked covered.
+AI-generated Talk Maps contain three 40–70-word candidates per node: explanation,
+example and transition. Older/deterministic maps without candidates retain the
+legacy starter and prompt. New live hints carry a continuation of 40–70 words
+and a semantic node suggestion. The server supplies the original input material,
+the map, final and partial context, and up to five actually displayed hints.
+Only an exact quote from final speech permits a permanent node-position update.
+A quote does not mark all previous topics covered.
 
-When the state enters `STUCK`, the browser shows the deterministic Talk Map cue
-immediately and requests `POST /api/v1/session/{id}/hint` in the background. The
-backend uses a three-second LLM timeout and returns a short structured cue. If
-the provider fails, the backend returns a deterministic cue with
-`source="deterministic"` and logs a sanitized diagnostic; recording and STT are
-not dependent on this request. The browser aborts its request after four
-seconds. An AI response replaces the visible fallback only while the same
-speaker-pause episode and Talk Map node are still active.
+The controller debounces changed context for 300 ms and dispatches at most one
+request per three seconds, with a single request in flight and latest-context
+coalescing. Provider work is not assumed to stop when the browser aborts. A
+three-second backend deadline includes structured-output retries; the client
+aborts after four seconds. Prefetch can consume quota even when no blank occurs.
 
-The backend receives only the bounded recent final-transcript window needed for
-a rescue hint during recording. The complete transcript and structured state
-events are sent when the speaker chooses to request feedback. It does not
-receive the video blob.
+At a blank, a matching cached AI candidate or unseen local candidate appears
+immediately. A live response can replace a fallback once within two seconds,
+provided its context is still current and speech has not resumed. Normalized
+punctuation-only changes preserve a candidate; substantive changes invalidate
+it. No AI request streams partially validated text onto the card.
+
+Resuming speech changes the card to a reading state without removing its text.
+Dismiss hides it. The next blank can surface a fresh candidate; exhausted or
+duplicate candidates retain the existing guidance instead of cycling repeatedly.
+Manual Hint uses the same controller, but its display is not an automatic blank
+entry. Request diagnostics remain visible in the log.
+
+## Timeline and shutdown
+
+The vertical, copyable Preview log contains speech start/end and transcript
+arrival timestamps, pause start/detection times, actually displayed hints, and
+collapsible diagnostics. Diagnostics distinguish provider fallback, request
+timeout, stale context, and reading-window suppression. Request durations and
+blank-to-display latency are recorded separately. Candidates never displayed
+are not logged as shown hints.
+
+Stopping ends assistance, flushes audio, sends Terminate, and reads until
+Termination (or a three-second timeout). This allows the last final turn to
+arrive before Preview. Timeout is recorded; the client does not claim an
+unfinished partial is a final transcript. Recording again resets controller
+history, pending requests, transcript turns, and the conversation timeline.
+
+## Reference and validation
+
+The streaming behavior follows AssemblyAI's
+[message sequence](https://www.assemblyai.com/docs/streaming/message-sequence),
+[turn detection](https://www.assemblyai.com/docs/streaming/turn-detection), and
+[WebSocket API](https://www.assemblyai.com/docs/streaming/api-spec/streaming-websocket).
+Run Node behavioral tests with `make test-frontend`. The browser acceptance
+target is p95 blank-to-local/cache-display below 100 ms in an active tab; this
+is a measurement target, not a guarantee for background tabs or AI network
+latency. See [validation.md](validation.md) for microphone acceptance scenarios.

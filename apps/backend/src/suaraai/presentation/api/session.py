@@ -103,6 +103,7 @@ def create_session_router(
                 request.recent_transcript,
                 request.covered_keywords,
                 request.previous_hints,
+                request.final_transcript,
             )
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -117,6 +118,11 @@ def create_session_router(
             starter=generated.starter,
             next_idea=generated.next_idea,
             source=generated.source,
+            continuation=generated.continuation,
+            node_id=generated.node_id,
+            evidence=generated.evidence,
+            generation_status=generated.generation_status,
+            context_id=request.context_id,
         )
 
     return router

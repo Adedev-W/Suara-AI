@@ -11,11 +11,14 @@ The implementation follows the PRD through the web scope of Phase 3:
 - Phase 1: Talk Map preparation, editable ordering, anonymous sessions, camera
   preview, local video recording, and local playback/download.
 - Phase 2: AssemblyAI realtime transcription, browser-local voice activity,
-  1.5-second STUCK detection, recovery, and manual hints.
+  adaptive 1.5/2.5-second pause detection, readable continuations, and manual hints.
 - Phase 3: structured post-recording feedback, PDF/PPTX ingestion, local
   embeddings, PostgreSQL plus pgvector retrieval, and session-scoped Q&A.
 - Realtime rescue hints: deterministic progress tracking with an optional,
   event-driven LLM cue requested only when the speaker is stuck.
+- Conversation log: finalized speech, automatic blank episodes, and every
+  visible fallback/AI hint transition are available in a copyable Preview
+  timeline. The log stays in the browser for the current recording.
 
 Native app integrations and server-side video storage are outside the selected
 web scope. Video stays in the browser as a local object URL. The final
@@ -135,16 +138,24 @@ by the prepare route. The server stores only its SHA-256 hash in PostgreSQL.
 The frontend uses the temporary STT token to connect directly to AssemblyAI;
 the long-lived provider key never reaches the browser. Realtime transport and
 audio assumptions are documented in [docs/realtime.md](docs/realtime.md).
-The hint route receives only a bounded recent final-transcript window and Talk
-Map context. After the speaker has started, 1.5 seconds without local voice
-activity shows a deterministic hint immediately while an optional LLM rescue
-response is pending. The browser cancels responses after speech resumes and
-refreshes the request when the active Talk Map node changes. Provider failures
-degrade to a 200 deterministic response with a sanitized diagnostic in server
-logs. This event-driven LLM rescue is an explicit extension to the PRD's
-original pre-recording-only LLM scope. During recording, AssemblyAI partial
-turns are shown in a rolling Live transcript panel; only final turns are added
-to the complete transcript used by preview and feedback.
+The hint route receives bounded final and partial transcript context. The server
+also supplies the original session material and the full Talk Map to the model.
+AI-generated maps include three ready-to-say rescue candidates per node, and
+live continuations contain 40–70 words. The browser prepares candidates after
+300 ms of stable context, at most once every three seconds with one request
+in flight. This can consume provider quota even when no hint is displayed.
+
+After confirmed speech, a 1.5-second unfinished pause or 2.5-second sentence
+pause shows a matching cached AI suggestion or local candidate. A fallback can
+be replaced once within two seconds, only before speech resumes. The card
+remains readable while speaking and can be dismissed. Responses for obsolete
+contexts cannot replace it. Legacy maps without candidates retain their short
+fallbacks. Provider failures include a diagnostic status in the hint response.
+
+The Preview conversation log distinguishes speech timestamps from transcript
+arrival times, records displayed hints and blanks, and includes collapsible
+diagnostics for request latency, timeouts, fallback responses and stale results.
+The vertical timeline can be copied and closed. Video remains browser-local.
 
 ## Quality checks
 
@@ -165,9 +176,9 @@ configured LLM provider, and consumes provider quota:
 SUARAAI_RUN_LIVE_LLM_TESTS=1 make test-backend
 ```
 
-The frontend currently has no runtime test runner in its dependency set, so its
-`test` script performs the TypeScript compilation smoke check. Browser behavior
-and the text-based backend scenario are documented in
+The frontend uses Node 24 or newer's built-in test runner and TypeScript
+stripping for behavioral tests, without a test dependency. Type checking remains
+a separate command. Browser behavior and the text-based backend scenario are documented in
 [docs/validation.md](docs/validation.md).
 
 Run `make format` when source formatting needs to be applied. Never commit

@@ -217,6 +217,7 @@ def _talk_map_to_dict(talk_map: TalkMap) -> dict[str, object]:
                 "starter": node.starter,
                 "next_prompt": node.next_prompt,
                 "status": node.status.value,
+                "rescue_candidates": node.rescue_candidates,
             }
             for node in talk_map.nodes
         ],
@@ -239,6 +240,7 @@ def _talk_map_from_dict(data: dict[str, Any]) -> TalkMap:
                 starter=str(node["starter"]),
                 next_prompt=str(node["next_prompt"]),
                 status=NodeStatus(str(node.get("status", NodeStatus.UPCOMING.value))),
+                rescue_candidates=[str(value) for value in node.get("rescue_candidates", [])],
             )
             for node in raw_nodes
             if isinstance(node, dict)

@@ -9,6 +9,7 @@ from suaraai.domain.copilot import (
     ExtractedDocument,
     Feedback,
     Hint,
+    HintContext,
     InputKind,
     RetrievedChunk,
     Session,
@@ -32,6 +33,7 @@ class HintGenerator(Protocol):
         recent_transcript: str,
         covered_keywords: Sequence[str],
         previous_hints: Sequence[str],
+        context: HintContext | None = None,
     ) -> Hint: ...
 
 

@@ -97,6 +97,32 @@ textarea::placeholder, input::placeholder { color: var(--muted); }
 .answer { margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--line); }
 .answer p { color: var(--ink); font-size: 14px; line-height: 1.5; }
 .text-action { display: inline-flex; align-items: center; gap: 8px; color: var(--accent); padding: 7px 0; }
+.preview-log-actions { margin-top: 24px; }
+.preview-log-actions button { border: 1px solid var(--line); border-radius: 999px; padding: 10px 14px; color: var(--ink); background: var(--panel); cursor: pointer; font-size: 13px; }
+.conversation-log-overlay { position: fixed; z-index: 10; inset: 0; display: grid; place-items: center; padding: 24px; background: rgba(18, 16, 14, .58); }
+.conversation-log-modal { width: min(100%, 680px); max-height: min(780px, calc(100svh - 48px)); overflow-y: auto; padding: 28px; border: 1px solid var(--line); border-radius: 24px; color: var(--ink); background: var(--surface); box-shadow: 0 24px 80px rgba(18, 16, 14, .24); }
+.conversation-log-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 20px; }
+.conversation-log-header .eyebrow { margin-bottom: 10px; }
+.conversation-log-header h2 { margin: 0; font-size: 30px; }
+.conversation-log-note { margin: 8px 0 0; color: var(--muted); font-size: 12px; }
+.conversation-log-close { flex: 0 0 auto; width: 34px; height: 34px; border: 1px solid var(--line); border-radius: 50%; color: var(--ink); background: transparent; cursor: pointer; font-size: 24px; line-height: 1; }
+.conversation-log-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 24px 0 8px; color: var(--muted); font-size: 12px; }
+.conversation-log-actions > span:first-child { margin-right: auto; }
+.conversation-log-actions button { border: 0; border-radius: 999px; padding: 9px 13px; color: #fff; background: var(--accent); cursor: pointer; font-size: 12px; font-weight: 600; }
+.conversation-log-copy-error { color: #a33d2c; }
+.conversation-log-empty { margin: 26px 0 4px; padding: 18px; border: 1px dashed var(--line); border-radius: 14px; color: var(--muted); font-size: 13px; }
+.conversation-log-list { position: relative; display: grid; gap: 0; margin: 16px 0 0; padding: 4px 0 4px 22px; list-style: none; }
+.conversation-log-list::before { position: absolute; top: 12px; bottom: 12px; left: 6px; width: 1px; background: var(--line); content: ''; }
+.conversation-log-item { position: relative; display: grid; grid-template-columns: 72px 1fr; gap: 16px; padding: 13px 0 18px; }
+.conversation-log-item::before { position: absolute; top: 18px; left: -19px; width: 9px; height: 9px; border: 2px solid var(--surface); border-radius: 50%; background: var(--muted); box-shadow: 0 0 0 1px var(--line); content: ''; }
+.conversation-log-item-blank::before { background: #d18b38; }
+.conversation-log-item-hint::before { background: var(--accent); }
+.conversation-log-item time { color: var(--muted); font: 11px ui-monospace, monospace; line-height: 1.4; }
+.conversation-log-item strong { display: block; color: var(--ink); font-size: 13px; font-weight: 650; }
+.conversation-log-item p { margin: 5px 0 0; color: var(--muted); font-size: 13px; line-height: 1.5; overflow-wrap: anywhere; }
+.conversation-log-item-utterance p { color: var(--ink); }
+.conversation-log-hint-keyword { color: var(--accent) !important; font-weight: 600; }
+.conversation-log-hint-context { font-size: 11px !important; }
 @media (max-width: 720px) {
   .app-shell { padding: 0 22px; }
   .topbar { min-height: 68px; }
@@ -117,5 +143,12 @@ textarea::placeholder, input::placeholder { color: var(--muted); }
   .footer { font-size: 10px; }
   .footer span:first-child { max-width: 130px; }
   .knowledge-panel form { display: grid; grid-template-columns: 1fr auto; }
+  .conversation-log-overlay { padding: 12px; }
+  .conversation-log-modal { max-height: calc(100svh - 24px); padding: 22px 18px; border-radius: 20px; }
+  .conversation-log-item { grid-template-columns: 64px 1fr; gap: 12px; }
 }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; } }
+.hint-card-header { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
+.hint-card-header button { padding: 0.2rem 0.6rem; font-size: 1.3rem; }
+.hint-card .hint-continuation { font-size: clamp(1rem, 1.6vw, 1.2rem); line-height: 1.65; white-space: pre-wrap; max-height: 32vh; overflow-y: auto; }
+.hint-card.is-reading { box-shadow: none; }

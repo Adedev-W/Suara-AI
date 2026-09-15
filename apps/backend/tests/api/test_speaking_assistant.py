@@ -77,7 +77,7 @@ def test_hint_endpoint_returns_a_complete_deterministic_fallback() -> None:
             response = await client.post(
                 f"/api/v1/session/{session['session_id']}/hint",
                 headers={"X-Session-Token": str(session["access_token"])},
-                json={"active_index": 0},
+                json={"active_index": 0, "context_id": "take-1:revision-2", "final_transcript": ""},
             )
 
         assert response.status_code == 200
@@ -87,5 +87,9 @@ def test_hint_endpoint_returns_a_complete_deterministic_fallback() -> None:
         assert payload["keyword"]
         assert payload["starter"]
         assert payload["next_idea"]
+        assert payload["context_id"] == "take-1:revision-2"
+        assert payload["generation_status"] == "local_fallback"
+        assert payload["node_id"] == "node-1"
+        assert payload["continuation"] == ""
 
     asyncio.run(run())

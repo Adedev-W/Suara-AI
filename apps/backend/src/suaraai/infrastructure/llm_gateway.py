@@ -8,7 +8,15 @@ from typing import Literal, TypeVar, cast
 
 import httpx
 
-from suaraai.domain.copilot import Feedback, Hint, InputKind, RetrievedChunk, TalkMap, TalkMapNode
+from suaraai.domain.copilot import (
+    Feedback,
+    Hint,
+    HintContext,
+    InputKind,
+    RetrievedChunk,
+    TalkMap,
+    TalkMapNode,
+)
 
 logger = logging.getLogger(__name__)
 T = TypeVar("T")
@@ -51,7 +59,12 @@ class AssemblyAILlmGateway:
                 "Read all supplied material before outlining it, including long input. Return "
                 "3 to 7 ordered nodes that cover its central ideas without inventing facts. "
                 "Use simple English, describe concepts rather than a script, provide 2 to 5 "
-                "short keywords per node, and keep starters and prompts to one short sentence."
+                "short keywords per node, and keep starters and prompts to one short sentence. "
+                "For each node provide exactly three rescue_candidates: an explanation, an "
+                "example, and a transition, each 40 to 70 words in 2 to 4 speakable sentences. "
+                "These are substantive continuations, not questions or coaching instructions. "
+                "For a bare topic use established general knowledge; for supplied notes respect "
+                "their facts. Never invent personal experiences, statistics, or citations."
             ),
             user=(
                 f"<input_kind>{input_kind.value}</input_kind>\n"
@@ -62,6 +75,7 @@ class AssemblyAILlmGateway:
             name="talk_map",
             schema=TALK_MAP_SCHEMA,
             parser=_parse_talk_map,
+            max_tokens=6500,
         )
 
     async def generate_feedback(self, transcript: str, talk_map: TalkMap) -> Feedback:
@@ -91,29 +105,40 @@ class AssemblyAILlmGateway:
         recent_transcript: str,
         covered_keywords: Sequence[str],
         previous_hints: Sequence[str],
+        context: HintContext | None = None,
     ) -> Hint:
+        context = context or HintContext()
         active_node = talk_map.nodes[min(active_index, len(talk_map.nodes) - 1)]
         next_node = (
             talk_map.nodes[active_index + 1] if active_index + 1 < len(talk_map.nodes) else None
         )
         return await self._structured_completion(
             system=(
-                "You provide one concise rescue cue for a beginner or intermediate English "
-                "speaker who is stuck while explaining a topic. Follow the active Talk Map "
-                "node and recent spoken context. Do not write a script, paragraph, or answer. "
-                "Use simple English and keep the starter and next idea under 12 words each. "
-                "Make the cue sound natural and different from previous cues."
+                "Help an English learner continue their explanation. Return continuation: "
+                "40 to 70 words in 2 to 4 simple, ready-to-say sentences, naturally following "
+                "the latest spoken words with an explanation, example or transition. Do not "
+                "repeat their introduction, ask coaching questions, or invent personal "
+                "experiences, statistics or citations. Supplied material is authoritative; "
+                "established general knowledge is allowed when the input is only a topic. "
+                "Partial transcript can be revised; prefer the latest context over the "
+                "active-node hint. Choose node_id from the whole map that matches what the "
+                "speaker is discussing. evidence must be an exact quote from final_transcript "
+                "supporting that node, or empty when only partial speech supports it. "
+                "Keep starter and next_idea short for legacy clients. Avoid previous hints."
             ),
             user=(
+                f"<source_material>{context.source_material}</source_material>\n"
+                f"<talk_map>{json.dumps(_talk_map_to_dict(talk_map))}</talk_map>\n"
+                f"<final_transcript>{context.final_transcript}</final_transcript>\n"
                 "<active_node>\n"
                 f"{json.dumps(_talk_map_node_to_dict(active_node), ensure_ascii=False)}\n"
                 "</active_node>\n"
                 "<next_node>\n"
                 f"{json.dumps(_talk_map_node_to_dict(next_node), ensure_ascii=False)}\n"
                 "</next_node>\n"
-                "<recent_final_transcript>\n"
+                "<latest_final_and_partial_transcript>\n"
                 f"{recent_transcript}\n"
-                "</recent_final_transcript>\n"
+                "</latest_final_and_partial_transcript>\n"
                 "<covered_keywords>\n"
                 f"{json.dumps(list(covered_keywords), ensure_ascii=False)}\n"
                 "</covered_keywords>\n"
@@ -124,7 +149,7 @@ class AssemblyAILlmGateway:
             name="realtime_hint",
             schema=HINT_SCHEMA,
             parser=_parse_hint,
-            max_tokens=320,
+            max_tokens=650,
             timeout_seconds=3.0,
         )
 
@@ -268,6 +293,12 @@ TALK_MAP_SCHEMA: dict[str, object] = {
                     "semantic_summary": {"type": "string", "minLength": 1, "maxLength": 500},
                     "starter": {"type": "string", "minLength": 1, "maxLength": 240},
                     "next_prompt": {"type": "string", "minLength": 1, "maxLength": 240},
+                    "rescue_candidates": {
+                        "type": "array",
+                        "minItems": 3,
+                        "maxItems": 3,
+                        "items": {"type": "string", "minLength": 1, "maxLength": 1200},
+                    },
                 },
                 "required": [
                     "title",
@@ -276,6 +307,7 @@ TALK_MAP_SCHEMA: dict[str, object] = {
                     "semantic_summary",
                     "starter",
                     "next_prompt",
+                    "rescue_candidates",
                 ],
                 "additionalProperties": False,
             },
@@ -309,8 +341,11 @@ HINT_SCHEMA: dict[str, object] = {
         "keyword": {"type": "string", "minLength": 1, "maxLength": 240},
         "starter": {"type": "string", "minLength": 1, "maxLength": 240},
         "next_idea": {"type": "string", "minLength": 1, "maxLength": 240},
+        "continuation": {"type": "string", "minLength": 1, "maxLength": 1200},
+        "node_id": {"type": "string", "minLength": 1, "maxLength": 120},
+        "evidence": {"type": "string", "maxLength": 600},
     },
-    "required": ["level", "keyword", "starter", "next_idea"],
+    "required": ["level", "keyword", "starter", "next_idea", "continuation", "node_id", "evidence"],
     "additionalProperties": False,
 }
 
@@ -363,8 +398,8 @@ def _structured_system_prompt(system: str, name: str, schema: dict[str, object])
         "3. The object must satisfy the JSON Schema exactly, including every required field "
         "and no additional properties.\n"
         "4. Never return a partial object or a patch.\n"
-        "5. Before responding, silently verify that every required field exists, every string "
-        "is non-empty, and every array satisfies its minimum and maximum item count.\n\n"
+        "5. Before responding, silently verify every required field exists and every value "
+        "satisfies its schema bounds. Empty evidence is allowed by the hint schema.\n\n"
         f"OUTPUT CONTRACT FOR {name!r}:\n"
         f"{_structured_output_contract(name)}\n\n"
         "REQUIRED JSON SCHEMA:\n"
@@ -384,49 +419,6 @@ def _structured_retry_prompt(system: str, validation_error: str) -> str:
 
 
 def _structured_output_contract(name: str) -> str:
-    if name == "talk_map":
-        return (
-            'The top-level object MUST contain exactly these two keys: "title" and '
-            '"nodes".\n'
-            '- "title" is REQUIRED at the top level and must be a non-empty string '
-            "summarizing the entire speaking plan.\n"
-            "- Do not put the plan title only inside a node.\n"
-            '- "nodes" must contain 3 to 7 objects.\n'
-            '- Every node must contain exactly: "title", "intent", "keywords", '
-            '"semantic_summary", "starter", and "next_prompt".\n'
-            '- "keywords" must contain at least one non-empty string.\n\n'
-            "OUTPUT TEMPLATE:\n"
-            "{\n"
-            '  "title": "Overall speaking plan title",\n'
-            '  "nodes": [\n'
-            "    {\n"
-            '      "title": "Node title",\n'
-            '      "intent": "Node intent",\n'
-            '      "keywords": ["keyword"],\n'
-            '      "semantic_summary": "Short semantic summary",\n'
-            '      "starter": "Conversation starter",\n'
-            '      "next_prompt": "Follow-up prompt"\n'
-            "    }\n"
-            "  ]\n"
-            "}\n\n"
-            "VALID EXAMPLE:\n"
-            "<example_output>\n"
-            '{"title":"Planning a weekend trip","nodes":['
-            '{"title":"Destination","intent":"Describe the place","keywords":["location"],'
-            '"semantic_summary":"Explain where the trip will happen.",'
-            '"starter":"I would like to visit...",'
-            '"next_prompt":"What makes this place interesting?"},'
-            '{"title":"Activities","intent":"Discuss planned activities","keywords":["activities"],'
-            '"semantic_summary":"Explain what you want to do there.",'
-            '"starter":"During the trip, I want to...",'
-            '"next_prompt":"Which activity is most important?"},'
-            '{"title":"Preparation","intent":"Explain preparation steps","keywords":["packing"],'
-            '"semantic_summary":"Describe how you will prepare for the trip.",'
-            '"starter":"Before leaving, I need to...",'
-            '"next_prompt":"What could make preparation easier?"}'
-            "]}\n"
-            "</example_output>"
-        )
     if name == "speaking_feedback":
         return (
             'The top-level object MUST contain exactly these five keys: "summary", '
@@ -453,25 +445,44 @@ def _structured_output_contract(name: str) -> str:
         )
     if name == "realtime_hint":
         return (
-            'The object MUST contain exactly these four keys: "level", "keyword", '
-            '"starter", and "next_idea".\n'
-            '- "level" must be 2 or 3.\n'
-            '- "keyword" must be one short concept from the active or next node.\n'
-            '- "starter" must be one natural sentence fragment, not a complete paragraph.\n'
-            '- "next_idea" must be one short direction or example prompt.\n'
-            "- Do not repeat a previous hint when another useful concept is available.\n\n"
-            "OUTPUT TEMPLATE:\n"
-            "{\n"
-            '  "level": 2,\n'
-            '  "keyword": "one concept",\n'
-            '  "starter": "The main idea is...",\n'
-            '  "next_idea": "Give one concrete example."\n'
-            "}"
+            "Return level, keyword, starter, next_idea, continuation, node_id and evidence. "
+            "continuation is 40 to 70 words in 2 to 4 speakable sentences. "
+            "evidence may be empty. Use the exact node ID from the map."
         )
     return (
-        "Follow the supplied JSON Schema exactly. Every field marked required must be "
-        "present and non-empty."
+        "Follow every required field in the JSON Schema. For a Talk Map, each node must "
+        "include three distinct rescue_candidates (explanation, example, transition), "
+        "each 40 to 70 words in 2 to 4 speakable sentences."
     )
+
+
+def _parse_continuation(text: str) -> str:
+    if not 40 <= len(text.split()) <= 70:
+        raise LlmGatewayError("Continuation must contain 40 to 70 words")
+    return text
+
+
+def _parse_candidates(payload: dict[str, object]) -> list[str]:
+    raw_candidates = payload.get("rescue_candidates")
+    if not isinstance(raw_candidates, list):
+        return []
+
+    candidates: list[str] = []
+    for raw_candidate in raw_candidates:
+        if not isinstance(raw_candidate, str):
+            continue
+        candidate = raw_candidate.strip()
+        if (
+            not candidate
+            or len(candidate) > 1200
+            or candidate in candidates
+            or not 40 <= len(candidate.split()) <= 70
+        ):
+            continue
+        candidates.append(candidate)
+        if len(candidates) == 3:
+            break
+    return candidates
 
 
 def _structured_output_diagnostic(attempt: int, error: LlmGatewayError, content: str) -> str:
@@ -574,6 +585,7 @@ def _parse_talk_map(payload: dict[str, object]) -> TalkMap:
                 semantic_summary=_required_bounded_string(raw_node, "semantic_summary", 500),
                 starter=_required_bounded_string(raw_node, "starter", 240),
                 next_prompt=_required_bounded_string(raw_node, "next_prompt", 240),
+                rescue_candidates=_parse_candidates(raw_node),
             )
         )
     return TalkMap(title=title, nodes=nodes)
@@ -594,12 +606,19 @@ def _parse_hint(payload: dict[str, object]) -> Hint:
     if not isinstance(raw_level, int) or isinstance(raw_level, bool) or raw_level not in {2, 3}:
         raise LlmGatewayError("LLM Gateway field 'level' must be 2 or 3")
     level: Literal[2, 3] = 2 if raw_level == 2 else 3
+    continuation = _parse_continuation(_required_bounded_string(payload, "continuation", 1200))
+    evidence = payload.get("evidence")
+    if not isinstance(evidence, str) or len(evidence) > 600:
+        raise LlmGatewayError("Hint evidence must be a string of at most 600 characters")
     return Hint(
         level=level,
         keyword=_required_bounded_string(payload, "keyword", 240),
         starter=_required_bounded_string(payload, "starter", 240),
         next_idea=_required_bounded_string(payload, "next_idea", 240),
         source="ai",
+        continuation=continuation,
+        node_id=_required_bounded_string(payload, "node_id", 120),
+        evidence=evidence.strip(),
     )
 
 
@@ -608,6 +627,7 @@ def _talk_map_to_dict(talk_map: TalkMap) -> dict[str, object]:
         "title": talk_map.title,
         "nodes": [
             {
+                "id": node.id,
                 "title": node.title,
                 "intent": node.intent,
                 "keywords": node.keywords,
@@ -624,6 +644,7 @@ def _talk_map_node_to_dict(node: TalkMapNode | None) -> dict[str, object] | None
     if node is None:
         return None
     return {
+        "id": node.id,
         "title": node.title,
         "intent": node.intent,
         "keywords": node.keywords,

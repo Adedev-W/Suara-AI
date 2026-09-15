@@ -40,12 +40,29 @@ export function selectHint(
   talkMap: TalkMap,
   activeIndex: number,
   covered: ReadonlySet<string> = new Set(),
+  previousHints: readonly string[] = [],
+  transcript = '',
 ): Hint | null {
   const node = talkMap.nodes[activeIndex]
   if (!node) return null
   const keyword = nextUncoveredKeyword(node, covered)
   if (!keyword) return null
-  return { level: 2, keyword, starter: node.starter, nextIdea: node.next_prompt, source: 'deterministic' }
+  const candidates = (node.rescue_candidates ?? []).filter((text) => !previousHints.includes(text))
+  const recent = new Set(words(transcript))
+  // Prefer the least already-spoken candidate; showing a hint never marks speech covered.
+  candidates.sort((a, b) => {
+    const overlap = (text: string) => words(text).filter((word) => recent.has(word)).length / Math.max(1, words(text).length)
+    return overlap(a) - overlap(b)
+  })
+  const continuation = candidates[0]
+  const legacy = `${node.starter} ${node.next_prompt}`.trim()
+  if (!continuation && previousHints.includes(legacy)) return null
+  return { level: 2, keyword, starter: node.starter, nextIdea: node.next_prompt,
+    continuation, nodeId: node.id, source: 'deterministic' }
+}
+
+export function hintText(hint: Hint): string {
+  return hint.continuation || `${hint.starter} ${hint.nextIdea}`.trim()
 }
 
 export function event(type: string, detail?: string, state?: FlowState, nodeId?: string): StateEvent {

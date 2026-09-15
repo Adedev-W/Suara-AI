@@ -8,7 +8,7 @@
     "build": "tsc -b && vite build",
     "lint": "oxlint",
     "typecheck": "tsc -b",
-    "test": "tsc -b",
+    "test": "node --test --test-isolation=none tests/*.test.mjs",
     "format": "oxlint --fix",
     "format:check": "oxlint",
     "preview": "vite preview"

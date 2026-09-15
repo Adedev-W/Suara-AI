@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Sequence
+from dataclasses import replace
 
 from suaraai.application.ports import HintGenerator
-from suaraai.domain.copilot import Hint, TalkMap
+from suaraai.domain.copilot import Hint, HintContext, TalkMap
 from suaraai.infrastructure.llm_gateway import LlmGatewayError
 
 logger = logging.getLogger(__name__)
@@ -24,24 +26,35 @@ class ResilientHintGenerator:
         recent_transcript: str,
         covered_keywords: Sequence[str],
         previous_hints: Sequence[str],
+        context: HintContext | None = None,
     ) -> Hint:
         try:
-            return await self._primary.generate_hint(
-                talk_map,
-                active_index,
-                recent_transcript,
-                covered_keywords,
-                previous_hints,
-            )
-        except LlmGatewayError as exc:
+            # HTTP read timeouts reset per read; this deadline also bounds all retries.
+            async with asyncio.timeout(3.0):
+                return await self._primary.generate_hint(
+                    talk_map,
+                    active_index,
+                    recent_transcript,
+                    covered_keywords,
+                    previous_hints,
+                    context,
+                )
+        except (LlmGatewayError, TimeoutError) as exc:
             logger.warning(
                 "Realtime AI hint unavailable; using deterministic fallback: %s",
-                exc.diagnostic_message,
+                exc.diagnostic_message if isinstance(exc, LlmGatewayError) else "deadline exceeded",
             )
-            return await self._fallback.generate_hint(
+            fallback = await self._fallback.generate_hint(
                 talk_map,
                 active_index,
                 recent_transcript,
                 covered_keywords,
                 previous_hints,
+                context,
+            )
+            return replace(
+                fallback,
+                generation_status=(
+                    "timeout" if isinstance(exc, TimeoutError) else "provider_fallback"
+                ),
             )

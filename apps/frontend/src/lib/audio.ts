@@ -1,3 +1,5 @@
+import type { SpeechPauseDetection } from '../domain/types'
+
 const workletSource = `class SuaraPcmProcessor extends AudioWorkletProcessor {
   process(inputs) {
     const channel = inputs[0]?.[0]
@@ -20,52 +22,72 @@ export function encodePcm(floatSamples: Float32Array, inputRate: number): ArrayB
   return output
 }
 
-export type AudioPipeline = { flush: () => void; close: () => void }
+export type AudioPipeline = {
+  flush: () => void; close: () => void; startedAt: number
+  confirmSpeech: (endMs: number) => void; setConnected: (connected: boolean) => void
+}
 
 export type AudioPipelineOptions = {
   onPcmChunk: (chunk: ArrayBuffer) => void
   onSpeechStarted: () => void
-  onStuck: () => void
+  onStuck: (detection: SpeechPauseDetection) => void
+  pauseThreshold: (connected: boolean) => number
 }
 
-const MIN_SPEECH_RMS = 0.015
-// Requiring 200 ms of activity prevents clicks and handling noise from rearming a hint episode.
-const REQUIRED_ACTIVE_CHUNKS = 2
-// Audio is evaluated in 100 ms chunks, so 15 silent chunks represent 1.5 seconds.
-const REQUIRED_SILENT_CHUNKS = 15
-
-type SpeechState = 'waiting' | 'speaking' | 'stuck'
-
+/** Sample durations, not message delivery cadence, define the acoustic timeline. */
 export class SpeechPauseDetector {
-  private state: SpeechState = 'waiting'
-  private activeChunks = 0
-  private silentChunks = 0
+  private elapsedMs = 0
+  private activeMs = 0
+  private silenceMs = 0
+  private state: 'waiting' | 'speaking' | 'stuck' = 'waiting'
+  private noiseFloor = 0.001
+  private connected = false
+  private confirmedEnd = -1
+  private consumedEnd = -1
   private readonly onSpeechStarted: () => void
-  private readonly onStuck: () => void
+  private readonly onStuck: (detection: SpeechPauseDetection) => void
+  private readonly threshold: (connected: boolean) => number
+  private readonly startedAt: number
+  private readonly wallNow: () => number
 
-  constructor(onSpeechStarted: () => void, onStuck: () => void) {
+  constructor(onSpeechStarted: () => void, onStuck: (detection: SpeechPauseDetection) => void,
+    threshold: (connected: boolean) => number = () => 1500,
+    startedAt = Date.now(), wallNow: () => number = Date.now) {
     this.onSpeechStarted = onSpeechStarted
     this.onStuck = onStuck
+    this.threshold = threshold
+    this.startedAt = startedAt
+    this.wallNow = wallNow
   }
 
-  observe(rms: number): void {
-    if (rms >= MIN_SPEECH_RMS) {
-      this.silentChunks = 0
-      this.activeChunks += 1
-      if (this.activeChunks === REQUIRED_ACTIVE_CHUNKS) {
+  confirmSpeech(endMs: number): void { this.confirmedEnd = Math.max(this.confirmedEnd, endMs) }
+  setConnected(connected: boolean): void { this.connected = connected }
+
+  observe(rms: number, durationMs = 50): void {
+    this.elapsedMs += durationMs
+    const threshold = Math.max(0.004, this.noiseFloor * (this.activeMs > 0 ? 2 : 3))
+    if (rms < threshold) this.noiseFloor = this.noiseFloor * 0.98 + rms * 0.02
+    if (rms >= threshold) {
+      this.silenceMs = 0
+      this.activeMs += durationMs
+      if (this.activeMs >= 200 && this.state !== 'speaking') {
         this.state = 'speaking'
         this.onSpeechStarted()
       }
       return
     }
-
-    this.activeChunks = 0
+    this.activeMs = 0
     if (this.state !== 'speaking') return
-    this.silentChunks += 1
-    if (this.silentChunks >= REQUIRED_SILENT_CHUNKS) {
-      this.state = 'stuck'
-      this.onStuck()
-    }
+    this.silenceMs += durationMs
+    if (this.silenceMs < this.threshold(this.connected)) return
+    if (this.connected && this.confirmedEnd <= this.consumedEnd) return
+    this.state = 'stuck'
+    // Late finalization of the same utterance must not rearm a noise-only episode.
+    this.consumedEnd = Math.max(this.confirmedEnd, this.elapsedMs - this.silenceMs + 100)
+    this.onStuck({
+      startedAt: this.startedAt + this.elapsedMs - this.silenceMs,
+      detectedAt: this.wallNow(), durationMs: this.silenceMs,
+    })
   }
 }
 
@@ -93,19 +115,21 @@ export async function createAudioPipeline(
     throw cause
   }
 
+  const startedAt = Date.now()
   const source = context.createMediaStreamSource(stream)
   const node = new AudioWorkletNode(context, 'suaraai-pcm')
   const silentGain = context.createGain()
   silentGain.gain.value = 0
-  const samplesPerChunk = Math.max(1, Math.round(context.sampleRate * 0.1))
+  const samplesPerChunk = Math.max(1, Math.round(context.sampleRate * 0.05))
   let pending = new Float32Array(samplesPerChunk)
   let pendingLength = 0
-  const speechDetector = new SpeechPauseDetector(options.onSpeechStarted, options.onStuck)
+  const speechDetector = new SpeechPauseDetector(options.onSpeechStarted, options.onStuck, options.pauseThreshold, startedAt)
+  speechDetector.setConnected(true)
 
   const send = (samples: Float32Array) => {
     const sumOfSquares = samples.reduce((total, sample) => total + sample * sample, 0)
     const rms = Math.sqrt(sumOfSquares / Math.max(1, samples.length))
-    speechDetector.observe(rms)
+    speechDetector.observe(rms, samples.length / context.sampleRate * 1000)
     options.onPcmChunk(encodePcm(samples, context.sampleRate))
   }
   const append = (samples: Float32Array) => {
@@ -129,6 +153,9 @@ export async function createAudioPipeline(
   silentGain.connect(context.destination)
 
   return {
+    startedAt,
+    confirmSpeech: (endMs) => speechDetector.confirmSpeech(endMs),
+    setConnected: (connected) => speechDetector.setConnected(connected),
     flush: () => {
       if (pendingLength > 0) send(pending.slice(0, pendingLength))
       pending = new Float32Array(samplesPerChunk)

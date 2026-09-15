@@ -11,6 +11,7 @@ export type TalkMapNode = {
   starter: string
   next_prompt: string
   status: NodeStatus
+  rescue_candidates?: string[]
 }
 
 export type TalkMap = { title: string; nodes: TalkMapNode[] }
@@ -42,6 +43,15 @@ export type SttTurn = {
   type: 'Turn'
   transcript: string
   isFinal: boolean
+  turnOrder: number
+  startMs?: number
+  endMs?: number
+}
+
+export type SpeechPauseDetection = {
+  startedAt: number
+  detectedAt: number
+  durationMs: number
 }
 
 export type Hint = {
@@ -50,4 +60,26 @@ export type Hint = {
   starter: string
   nextIdea: string
   source: 'ai' | 'deterministic'
+  continuation?: string
+  nodeId?: string
+  evidence?: string
+  generationStatus?: string
+  contextId?: string
 }
+
+export type ConversationLogEntry =
+  | { kind: 'utterance'; at: number; text: string; turnOrder?: number; endedAt?: number; receivedAt?: number }
+  | { kind: 'diagnostic'; at: number; detail: string }
+  | {
+      kind: 'blank'
+      at: number
+      detectedAt: number
+      durationMs: number
+    }
+  | {
+      kind: 'hint'
+      at: number
+      hint: Hint
+      episodeStartedAt: number
+      trigger: 'automatic' | 'context-change'
+    }

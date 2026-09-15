@@ -1,14 +1,16 @@
 import { useCallback, useEffect, useReducer, useRef, useState, type FormEvent, type ReactNode, type RefObject } from 'react'
 import './App.css'
 import lightLogo from './assets/suaraai-logo-light.png'
+import { ConversationLogModal } from './components/ConversationLogModal'
+import { HintCard } from './components/HintCard'
 import { RealtimeTranscript } from './components/RealtimeTranscript'
 import { ThemePicker } from './ThemePicker'
-import type { Feedback, FlowState, InputKind, Session, StateEvent, SttTurn, TalkMap } from './domain/types'
+import type { ConversationLogEntry, Feedback, FlowState, InputKind, Session, StateEvent, SttTurn, TalkMap } from './domain/types'
 import { completeSession, prepareSession, askKnowledge, updateTalkMap, uploadKnowledge } from './lib/api'
 import { createAudioPipeline, createVideoRecorder, stopMediaStream, type AudioPipeline } from './lib/audio'
 import { event } from './lib/flow'
 import { coveredKeywordsForActiveNode, createRecordingProgress, recordingProgressReducer } from './lib/recordingProgress'
-import { openAssemblySocket, parseSttMessage } from './lib/stt'
+import { openAssemblySocket } from './lib/stt'
 import { useRealtimeAssistant, type AssistantView } from './lib/useRealtimeAssistant'
 
 type AppMode = 'setup' | 'map' | 'ready' | 'recording' | 'preview' | 'feedback'
@@ -39,6 +41,7 @@ function App() {
   const [mediaStream, setMediaStream] = useState<MediaStream | null>(null)
   const videoRef = useRef<HTMLVideoElement>(null)
   const recorderRef = useRef<MediaRecorder | null>(null)
+  const finishingRef = useRef(false)
   const audioRef = useRef<AudioPipeline | null>(null)
   const socketRef = useRef<WebSocket | null>(null)
   const chunksRef = useRef<Blob[]>([])
@@ -68,6 +71,10 @@ function App() {
     (nextEvent: StateEvent) => dispatchProgress({ type: 'add-event', event: nextEvent }),
     [],
   )
+  const addConversationLog = useCallback(
+    (entry: ConversationLogEntry) => dispatchProgress({ type: 'add-conversation-log', entry }),
+    [],
+  )
 
   const activeNode = talkMap?.nodes[activeIndex]
   const activeCoveredConcepts = activeNode
@@ -78,9 +85,12 @@ function App() {
     talkMap,
     activeIndex,
     recentTranscript: progress.recentTranscript,
+    finalTranscript: progress.transcript,
+    onSemanticNode: (nodeId, evidence) => dispatchProgress({ type: 'semantic-node', nodeId, evidence }),
     coveredConcepts: [...activeCoveredConcepts],
     coveredKeywords: coveredKeywordsForActiveNode(progress),
     onEvent: addEvent,
+    onConversationLog: addConversationLog,
   })
 
   const handleTurn = useCallback((turn: SttTurn) => {
@@ -88,8 +98,12 @@ function App() {
       type: 'transcript-turn',
       text: turn.transcript,
       isFinal: turn.isFinal,
-      at: Date.now(),
+      at: turn.startMs !== undefined && audioRef.current ? audioRef.current.startedAt + turn.startMs : Date.now(),
+      endedAt: turn.endMs !== undefined && audioRef.current ? audioRef.current.startedAt + turn.endMs : undefined,
+      turnOrder: turn.turnOrder,
+      receivedAt: Date.now(),
     })
+    if (turn.transcript.trim() && turn.endMs !== undefined) audioRef.current?.confirmSpeech(turn.endMs)
   }, [])
 
   const createSpeakingSession = async (submitEvent: FormEvent) => {
@@ -114,7 +128,7 @@ function App() {
     setMediaStream(null)
     setCameraReady(false)
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true })
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } })
       setMediaStream(stream)
       setCameraReady(true)
       setMode('ready')
@@ -125,6 +139,7 @@ function App() {
 
   const startRecording = async () => {
     if (!mediaStream || !talkMap) return
+    finishingRef.current = false
     setError('')
     setRecordingSeconds(0)
     setIsListening(false)
@@ -146,6 +161,7 @@ function App() {
 
     let liveSocket: WebSocket | null = null
     let sttFailureReported = false
+    let audioOverflowReported = false
     const pendingPcmChunks: ArrayBuffer[] = []
     const audioPromise = createAudioPipeline(mediaStream, {
       onPcmChunk: (chunk) => {
@@ -153,12 +169,24 @@ function App() {
           liveSocket.send(chunk)
           return
         }
-        // Keep at most two seconds while STT connects so startup cannot grow memory unbounded.
+        if (sttFailureReported) return
+        // Preserve the stream origin: dropping old frames would corrupt provider timestamps.
+        if (pendingPcmChunks.length >= 200) {
+          if (!audioOverflowReported) {
+            audioOverflowReported = true
+            sttFailureReported = true
+            audioRef.current?.setConnected(false)
+            setIsListening(false)
+            setSttStatus('Live transcript unavailable — guidance still works')
+            addConversationLog({ kind: 'diagnostic', at: Date.now(), detail: 'STT startup buffer exceeded 10 seconds; transcription disabled for this take' })
+          }
+          return
+        }
         pendingPcmChunks.push(chunk)
-        if (pendingPcmChunks.length > 20) pendingPcmChunks.shift()
       },
       onSpeechStarted: realtimeAssistant.noteSpeechStarted,
       onStuck: realtimeAssistant.noteStuck,
+      pauseThreshold: realtimeAssistant.pauseThreshold,
     }).then((audio) => {
       if (recorderRef.current !== recorder) {
         audio.close()
@@ -167,20 +195,28 @@ function App() {
       audioRef.current = audio
       return audio
     })
-    const socketPromise = openAssemblySocket().then((socket) => {
-      if (recorderRef.current !== recorder) {
+    const socketPromise = openAssemblySocket((message) => {
+      if (recorderRef.current !== recorder) return
+      if (message.type === 'Turn') handleTurn(message)
+      if (message.type === 'SpeechStarted') realtimeAssistant.noteSpeechStarted()
+      if (message.type === 'Error') {
+        sttFailureReported = true
+        audioRef.current?.setConnected(false)
+        setIsListening(false)
+        setSttStatus('Live transcript unavailable — guidance still works')
+        addConversationLog({ kind: 'diagnostic', at: Date.now(), detail: 'STT provider reported an error' })
+      }
+    }).then((socket) => {
+      if (recorderRef.current !== recorder || audioOverflowReported || sttFailureReported) {
         socket.close()
         return null
       }
       liveSocket = socket
       socketRef.current = socket
-      socket.onmessage = (message) => {
-        const turn = parseSttMessage(String(message.data))
-        if (turn) handleTurn(turn)
-      }
       socket.onclose = () => {
         if (recorderRef.current !== recorder) return
         liveSocket = null
+        audioRef.current?.setConnected(false)
         sttFailureReported = true
         setIsListening(false)
         setSttStatus('Live transcript unavailable — guidance still works')
@@ -208,6 +244,7 @@ function App() {
       socketRef.current = null
     }
     const assistanceReady = audioAvailable && socketAvailable
+    if (audioResult.status === 'fulfilled') audioResult.value?.setConnected(assistanceReady)
     setIsListening(assistanceReady)
     if (assistanceReady) {
       setSttStatus('Listening')
@@ -220,32 +257,47 @@ function App() {
   }
 
   const finishRecording = async () => {
+    if (finishingRef.current) return
+    finishingRef.current = true
+    setSttStatus('Finishing transcript…')
+    setIsListening(false)
+    const recorder = recorderRef.current
+    // Stop the video immediately while STT drains its final messages independently.
+    const videoStopped = new Promise<void>((resolve) => {
+      if (recorder?.state !== 'recording') { resolve(); return }
+      recorder.addEventListener('stop', () => resolve(), { once: true })
+      recorder.stop()
+    })
     realtimeAssistant.end()
     audioRef.current?.flush()
     audioRef.current?.close()
-    audioRef.current = null
     const socket = socketRef.current
     if (socket) socket.onclose = null
     if (socket?.readyState === WebSocket.OPEN) {
       await new Promise<void>((resolve) => {
-        const timeout = window.setTimeout(resolve, 750)
-        socket.addEventListener('close', () => {
+        const done = () => {
           window.clearTimeout(timeout)
+          socket.removeEventListener('message', onMessage)
+          socket.removeEventListener('close', done)
           resolve()
-        }, { once: true })
+        }
+        const onMessage = (message: MessageEvent) => {
+          try { if (JSON.parse(String(message.data)).type === 'Termination') done() } catch { /* Ignore non-JSON frames. */ }
+        }
+        const timeout = window.setTimeout(() => {
+          addConversationLog({ kind: 'diagnostic', at: Date.now(), detail: 'STT final flush timed out after 3000 ms' })
+          done()
+        }, 3000)
+        socket.addEventListener('message', onMessage)
+        socket.addEventListener('close', done, { once: true })
         socket.send(JSON.stringify({ type: 'Terminate' }))
       })
     }
     socket?.close()
     socketRef.current = null
+    audioRef.current = null
     setIsListening(false)
-    const recorder = recorderRef.current
-    if (recorder?.state === 'recording') {
-      await new Promise<void>((resolve) => {
-        recorder.addEventListener('stop', () => resolve(), { once: true })
-        recorder.stop()
-      })
-    }
+    await videoStopped
     recorderRef.current = null
     const nextUrl = URL.createObjectURL(new Blob(chunksRef.current, { type: 'video/webm' }))
     setVideoUrl((current) => { if (current) URL.revokeObjectURL(current); return nextUrl })
@@ -298,8 +350,8 @@ function App() {
   return <Shell>
     {mode === 'map' && <TalkMapScreen talkMap={talkMap} setTalkMap={(nextTalkMap) => dispatchProgress({ type: 'set-talk-map', talkMap: nextTalkMap })} onContinue={async () => { try { const saved = await updateTalkMap({ ...session, talk_map: talkMap }); setSession(saved); dispatchProgress({ type: 'set-talk-map', talkMap: saved.talk_map }); setMode('ready') } catch (cause) { setError(cause instanceof Error ? cause.message : 'Talk Map could not be saved.') } }} error={error} />}
     {mode === 'ready' && <ReadyScreen videoRef={videoRef} cameraReady={cameraReady} onRequestCamera={requestCamera} onStart={startRecording} error={error} />}
-    {mode === 'recording' && <RecordingScreen videoRef={videoRef} talkMap={talkMap} activeIndex={activeIndex} flowState={realtimeAssistant.flowState} assistant={realtimeAssistant.view} finalTranscript={progress.transcript} interimTranscript={progress.interimTranscript} recordingSeconds={recordingSeconds} sttStatus={sttStatus} isListening={isListening} onHint={showManualHint} onStop={finishRecording} />}
-    {mode === 'preview' && <PreviewScreen videoUrl={videoUrl} transcript={transcript} onComplete={complete} onAgain={() => { setMode('ready'); void requestCamera() }} isSubmitting={isSubmitting} error={error} />}
+    {mode === 'recording' && <RecordingScreen videoRef={videoRef} talkMap={talkMap} activeIndex={activeIndex} flowState={realtimeAssistant.flowState} assistant={realtimeAssistant.view} finalTranscript={progress.transcript} interimTranscript={progress.interimTranscript} recordingSeconds={recordingSeconds} sttStatus={sttStatus} isListening={isListening} onHint={showManualHint} onDismissHint={realtimeAssistant.dismissHint} onStop={finishRecording} />}
+    {mode === 'preview' && <PreviewScreen videoUrl={videoUrl} transcript={transcript} conversationLog={progress.conversationLog} onComplete={complete} onAgain={() => { setMode('ready'); void requestCamera() }} isSubmitting={isSubmitting} error={error} />}
     {mode === 'feedback' && feedback && <FeedbackScreen feedback={feedback} videoUrl={videoUrl} session={session} documentStatus={documentStatus} setDocumentStatus={setDocumentStatus} question={question} setQuestion={setQuestion} answer={answer} sources={sources} onAsk={async () => { try { const result = await askKnowledge(session, question); setAnswer(result.answer); setSources(result.sources.map((source) => `${source.source_name}${source.page_number ? ` · page ${source.page_number}` : ''}`)) } catch (cause) { setError(cause instanceof Error ? cause.message : 'The question could not be answered.') } }} onUpload={async (file) => { try { const result = await uploadKnowledge(session, file); setDocumentStatus(`${result.source_name} indexed in ${result.chunk_count} chunks.`) } catch (cause) { setDocumentStatus(cause instanceof Error ? cause.message : 'The document could not be indexed.') } }} onReset={reset} error={error} />}
   </Shell>
 }
@@ -321,16 +373,19 @@ function ReadyScreen({ videoRef, cameraReady, onRequestCamera, onStart, error }:
   return <section className="page ready-page"><p className="eyebrow">Camera readiness</p><h1>Settle in.<br />Then start.</h1><div className="camera-card"><video ref={videoRef} autoPlay muted playsInline />{!cameraReady && <div className="camera-placeholder"><MicIcon /><span>Your camera preview appears here.</span></div>}</div><div className="readiness-row"><span><i className={cameraReady ? 'ready-dot' : ''} />{cameraReady ? 'Camera + mic ready' : 'Permission required'}</span><button type="button" onClick={onRequestCamera}>{cameraReady ? 'Refresh preview' : 'Enable camera'}</button></div><button className="primary-button" type="button" disabled={!cameraReady} onClick={onStart}>Start recording <ArrowIcon /></button>{error && <p className="error-message" role="alert">{error}</p>}</section>
 }
 
-function RecordingScreen({ videoRef, talkMap, activeIndex, flowState, assistant, finalTranscript, interimTranscript, recordingSeconds, sttStatus, isListening, onHint, onStop }: { videoRef: RefObject<HTMLVideoElement | null>; talkMap: TalkMap; activeIndex: number; flowState: FlowState; assistant: AssistantView; finalTranscript: string; interimTranscript: string; recordingSeconds: number; sttStatus: string; isListening: boolean; onHint: () => void; onStop: () => void }) {
+function RecordingScreen({ videoRef, talkMap, activeIndex, flowState, assistant, finalTranscript, interimTranscript, recordingSeconds, sttStatus, isListening, onHint, onDismissHint, onStop }: { videoRef: RefObject<HTMLVideoElement | null>; talkMap: TalkMap; activeIndex: number; flowState: FlowState; assistant: AssistantView; finalTranscript: string; interimTranscript: string; recordingSeconds: number; sttStatus: string; isListening: boolean; onHint: () => void; onDismissHint: () => void; onStop: () => void }) {
   const node = talkMap.nodes[activeIndex]
   const assistantStatus = flowState === 'STUCK'
     ? 'A cue is ready'
     : isListening ? 'Listening' : sttStatus
-  return <section className="recording-page"><div className="recording-video"><video ref={videoRef} autoPlay muted playsInline /><span className="recording-indicator"><i />REC {formatDuration(recordingSeconds)}</span><div className="recording-status">{assistantStatus}</div>{assistant.hint && <aside className={`hint-card${assistant.status === 'hidden' ? ' is-hidden' : ''}`} aria-live="polite" aria-hidden={assistant.status === 'hidden'}><span className="hint-label">Try this</span><strong>{assistant.hint.starter}</strong><p>{assistant.hint.nextIdea}</p><small>{assistant.status === 'visible' && assistant.personalizing ? 'Personalizing…' : 'Keep it in your own words.'}</small></aside>}<div className="recording-controls"><button type="button" onClick={onHint} aria-label="Show a hint"><span>?</span> Hint</button><button type="button" className="stop-button" onClick={onStop}>Stop recording</button></div></div><RealtimeTranscript finalTranscript={finalTranscript} interimTranscript={interimTranscript} statusLabel={isListening ? 'Listening' : sttStatus} /><div className="recording-map"><p className="eyebrow">Current idea</p><h2>{node?.title}</h2><p>{node?.intent}</p><div className="mini-map">{talkMap.nodes.map((item) => <span key={item.id} className={item.status} />)}</div></div></section>
+  return <section className="recording-page"><div className="recording-video"><video ref={videoRef} autoPlay muted playsInline /><span className="recording-indicator"><i />REC {formatDuration(recordingSeconds)}</span><div className="recording-status">{assistantStatus}</div><HintCard view={assistant} onClose={onDismissHint} /><div className="recording-controls"><button type="button" onClick={onHint} aria-label="Show a hint"><span>?</span> Hint</button><button type="button" className="stop-button" onClick={onStop}>Stop recording</button></div></div><RealtimeTranscript finalTranscript={finalTranscript} interimTranscript={interimTranscript} statusLabel={isListening ? 'Listening' : sttStatus} /><div className="recording-map"><p className="eyebrow">Current idea</p><h2>{node?.title}</h2><p>{node?.intent}</p><div className="mini-map">{talkMap.nodes.map((item) => <span key={item.id} className={item.status} />)}</div></div></section>
 }
 
-function PreviewScreen({ videoUrl, transcript, onComplete, onAgain, isSubmitting, error }: { videoUrl: string | null; transcript: string; onComplete: () => void; onAgain: () => void; isSubmitting: boolean; error: string }) {
-  return <section className="page preview-page"><p className="eyebrow">Take complete</p><h1>That’s your take.</h1><p className="lede">Watch it back, then get one useful next step.</p>{videoUrl && <video className="preview-video" src={videoUrl} controls playsInline />}<p className="transcript-preview">{transcript || 'No final transcript was captured.'}</p><div className="button-row"><button type="button" onClick={onAgain}>Record again</button><button className="primary-button" type="button" disabled={isSubmitting || !transcript} onClick={onComplete}>{isSubmitting ? 'Reflecting…' : 'Get speaking feedback'} <ArrowIcon /></button></div>{error && <p className="error-message" role="alert">{error}</p>}</section>
+function PreviewScreen({ videoUrl, transcript, conversationLog, onComplete, onAgain, isSubmitting, error }: { videoUrl: string | null; transcript: string; conversationLog: readonly ConversationLogEntry[]; onComplete: () => void; onAgain: () => void; isSubmitting: boolean; error: string }) {
+  const [isLogOpen, setIsLogOpen] = useState(false)
+  const logButtonRef = useRef<HTMLButtonElement>(null)
+
+  return <section className="page preview-page"><p className="eyebrow">Take complete</p><h1>That’s your take.</h1><p className="lede">Watch it back, then get one useful next step.</p>{videoUrl && <video className="preview-video" src={videoUrl} controls playsInline />}<p className="transcript-preview">{transcript || 'No final transcript was captured.'}</p><div className="preview-log-actions"><button ref={logButtonRef} type="button" onClick={() => setIsLogOpen(true)}>View conversation log ({conversationLog.length})</button></div><div className="button-row"><button type="button" onClick={onAgain}>Record again</button><button className="primary-button" type="button" disabled={isSubmitting || !transcript} onClick={onComplete}>{isSubmitting ? 'Reflecting…' : 'Get speaking feedback'} <ArrowIcon /></button></div>{error && <p className="error-message" role="alert">{error}</p>}{isLogOpen && <ConversationLogModal entries={conversationLog} onClose={() => setIsLogOpen(false)} returnFocusRef={logButtonRef} />}</section>
 }
 
 function FeedbackScreen(props: { feedback: Feedback; videoUrl: string | null; session: Session; documentStatus: string; setDocumentStatus: (value: string) => void; question: string; setQuestion: (value: string) => void; answer: string; sources: string[]; onAsk: () => void; onUpload: (file: File) => void; onReset: () => void; error: string }) {
