@@ -16,8 +16,8 @@ Focused backend tests cover bounded Talk Maps for long input, invalid active
 nodes, contextual hint inputs, and deterministic fallback when the provider is
 unavailable. The opt-in end-to-end conversation scenario starts the real ASGI
 server as a separate process, uses HTTPX to call the public REST endpoints,
-sends real text turns, waits in real time, and calls the configured AssemblyAI
-LLM Gateway. It prints the conversation timeline and returned data for
+sends real text turns, waits in real time, and calls the configured DeepSeek
+Responses API. It prints the conversation timeline and returned data for
 inspection with `-s`.
 
 Run the live conversation from `apps/backend`:
@@ -27,7 +27,7 @@ SUARAAI_RUN_LIVE_LLM_TESTS=1 .venv/bin/pytest \
   tests/e2e/test_realtime_conversation.py -s -vv
 ```
 
-The test requires `ASSEMBLYAI_API_KEY` in the shell environment or repository
+The test requires `DEEPSEEK_API_KEY` in the shell environment or repository
 `.env` and consumes provider quota. Without the explicit
 `SUARAAI_RUN_LIVE_LLM_TESTS=1` flag, the scenario is skipped. The backend test
 uses REST because the current backend exposes REST hint endpoints; AssemblyAI

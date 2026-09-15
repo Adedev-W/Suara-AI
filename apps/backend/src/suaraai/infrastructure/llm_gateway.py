@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 T = TypeVar("T")
 
 
-class LlmGatewayError(RuntimeError):
+class LlmProviderError(RuntimeError):
     def __init__(self, message: str, *, diagnostic_message: str | None = None) -> None:
         super().__init__(message)
         self.diagnostic_message = diagnostic_message or message
@@ -37,20 +37,20 @@ _SENSITIVE_ERROR_PATTERN = re.compile(
 )
 
 
-class AssemblyAILlmGateway:
+class DeepSeekLlm:
     def __init__(
         self,
         api_key: str | None,
         model: str,
         base_url: str,
-        fallback_model: str | None = None,
         timeout_seconds: float = 30.0,
+        transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         self._api_key = api_key
         self._model = model
         self._base_url = base_url.rstrip("/")
-        self._fallback_model = fallback_model
         self._timeout_seconds = timeout_seconds
+        self._transport = transport
 
     async def generate(self, input_kind: InputKind, input_text: str) -> TalkMap:
         return await self._structured_completion(
@@ -151,6 +151,7 @@ class AssemblyAILlmGateway:
             parser=_parse_hint,
             max_tokens=650,
             timeout_seconds=3.0,
+            stream=True,
         )
 
     async def answer(self, question: str, context: Sequence[RetrievedChunk]) -> str:
@@ -179,6 +180,7 @@ class AssemblyAILlmGateway:
         parser: Callable[[dict[str, object]], T],
         max_tokens: int = 1400,
         timeout_seconds: float | None = None,
+        stream: bool = False,
     ) -> T:
         structured_system = _structured_system_prompt(system, name, schema)
         validation_error = "the previous response did not satisfy the JSON contract"
@@ -189,18 +191,23 @@ class AssemblyAILlmGateway:
             content = await self._completion(
                 system=attempt_system,
                 user=user,
-                post_process_json=True,
                 max_tokens=max_tokens,
                 timeout_seconds=timeout_seconds,
+                schema_name=name,
+                schema=schema,
+                stream=stream,
+                # Structured responses are validated against a schema, so reasoning tokens
+                # only delay the result and can exhaust the output budget before JSON arrives.
+                disable_thinking=True,
             )
             try:
                 return parser(_parse_json_object(content))
-            except LlmGatewayError as exc:
+            except LlmProviderError as exc:
                 validation_error = str(exc)
                 diagnostic = _structured_output_diagnostic(attempt, exc, content)
                 logger.warning("%s", diagnostic)
                 if attempt == 2:
-                    raise LlmGatewayError(
+                    raise LlmProviderError(
                         f"{exc} after {attempt} attempts",
                         diagnostic_message=f"{exc} after {attempt} attempts; {diagnostic}",
                     ) from exc
@@ -210,65 +217,169 @@ class AssemblyAILlmGateway:
         self,
         system: str,
         user: str,
-        post_process_json: bool = False,
         max_tokens: int = 1400,
         timeout_seconds: float | None = None,
+        schema_name: str | None = None,
+        schema: dict[str, object] | None = None,
+        stream: bool = False,
+        disable_thinking: bool = False,
     ) -> str:
         if not self._api_key:
-            raise LlmGatewayError("LLM Gateway is not configured")
+            raise LlmProviderError("DeepSeek is not configured")
         body: dict[str, object] = {
             "model": self._model,
-            "messages": [
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
-            "max_tokens": max_tokens,
+            "instructions": system,
+            "input": user,
+            "max_output_tokens": max_tokens,
         }
-        if self._fallback_model:
-            body["fallbacks"] = [{"model": self._fallback_model}]
-        if post_process_json:
-            body["post_processing_steps"] = [{"type": "json-repair"}]
-        headers = {"authorization": self._api_key, "content-type": "application/json"}
+        if schema_name is not None and schema is not None:
+            body["text"] = {
+                "format": {"type": "json_schema", "name": schema_name, "schema": schema}
+            }
+        if stream:
+            body["stream"] = True
+        if disable_thinking:
+            body["reasoning"] = {"effort": "none"}
+        headers = {
+            "authorization": f"Bearer {self._api_key}",
+            "content-type": "application/json",
+        }
         request_timeout = timeout_seconds or self._timeout_seconds
         try:
-            async with httpx.AsyncClient(timeout=request_timeout) as client:
+            async with httpx.AsyncClient(
+                timeout=request_timeout, transport=self._transport
+            ) as client:
+                if stream:
+                    return await self._stream_completion(client, headers, body)
                 response = await client.post(
-                    f"{self._base_url}/chat/completions", headers=headers, json=body
+                    f"{self._base_url}/responses", headers=headers, json=body
                 )
                 response.raise_for_status()
         except httpx.TimeoutException as exc:
-            raise LlmGatewayError(
-                f"LLM Gateway request timed out after {request_timeout:g} seconds"
+            raise LlmProviderError(
+                f"DeepSeek request timed out after {request_timeout:g} seconds"
             ) from exc
         except httpx.HTTPStatusError as exc:
             public_message, diagnostic_message = _format_provider_http_error(exc.response)
-            raise LlmGatewayError(public_message, diagnostic_message=diagnostic_message) from exc
+            raise LlmProviderError(public_message, diagnostic_message=diagnostic_message) from exc
         except httpx.RequestError as exc:
-            raise LlmGatewayError(f"LLM Gateway network error ({type(exc).__name__})") from exc
+            raise LlmProviderError(f"DeepSeek network error ({type(exc).__name__})") from exc
         except httpx.HTTPError as exc:
-            raise LlmGatewayError(f"LLM Gateway HTTP client error ({type(exc).__name__})") from exc
+            raise LlmProviderError(f"DeepSeek HTTP client error ({type(exc).__name__})") from exc
         try:
             data = response.json()
         except ValueError as exc:
-            raise LlmGatewayError("LLM Gateway returned a non-JSON success response") from exc
-        if not isinstance(data, dict):
-            raise LlmGatewayError("LLM Gateway returned an invalid response")
-        choices = data.get("choices")
-        if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
-            raise LlmGatewayError(
-                _with_request_id("LLM Gateway returned no completion", _request_id(data))
+            raise LlmProviderError("DeepSeek returned a non-JSON success response") from exc
+        return _response_text(data)
+
+    async def _stream_completion(
+        self,
+        client: httpx.AsyncClient,
+        headers: dict[str, str],
+        body: dict[str, object],
+    ) -> str:
+        buffered_text: list[str] = []
+        async with client.stream(
+            "POST", f"{self._base_url}/responses", headers=headers, json=body
+        ) as response:
+            response.raise_for_status()
+            event_name: str | None = None
+            data_lines: list[str] = []
+            async for line in response.aiter_lines():
+                if not line:
+                    completed = _consume_sse_event(event_name, data_lines, buffered_text)
+                    if completed is not None:
+                        return completed
+                    event_name = None
+                    data_lines = []
+                elif line.startswith("event:"):
+                    event_name = line.removeprefix("event:").strip()
+                elif line.startswith("data:"):
+                    data_lines.append(line.removeprefix("data:").strip())
+            completed = _consume_sse_event(event_name, data_lines, buffered_text)
+            if completed is not None:
+                return completed
+        raise LlmProviderError("DeepSeek streaming response ended before completion")
+
+
+def _consume_sse_event(
+    event_name: str | None,
+    data_lines: Sequence[str],
+    buffered_text: list[str],
+) -> str | None:
+    if not data_lines:
+        return None
+    try:
+        payload = json.loads("\n".join(data_lines))
+    except ValueError as exc:
+        raise LlmProviderError("DeepSeek streaming response contains invalid JSON") from exc
+    if not isinstance(payload, dict):
+        raise LlmProviderError("DeepSeek streaming response contains an invalid event")
+    event_type = payload.get("type") if isinstance(payload.get("type"), str) else event_name
+    if event_type == "response.output_text.delta":
+        delta = payload.get("delta")
+        if isinstance(delta, str):
+            buffered_text.append(delta)
+        return None
+    if event_type == "response.completed":
+        response = payload.get("response")
+        if not isinstance(response, dict):
+            raise LlmProviderError("DeepSeek completion event has no response")
+        return _response_text(response, "".join(buffered_text))
+    if event_type in {"response.failed", "response.incomplete"}:
+        response = payload.get("response")
+        if isinstance(response, dict):
+            reason = _response_failure_reason(response)
+            raise LlmProviderError(reason)
+        raise LlmProviderError("DeepSeek streaming response did not complete")
+    return None
+
+
+def _response_text(data: object, buffered_text: str = "") -> str:
+    if not isinstance(data, dict):
+        raise LlmProviderError("DeepSeek returned an invalid response")
+    if data.get("status") != "completed":
+        raise LlmProviderError(_response_failure_reason(data))
+    output = data.get("output")
+    if isinstance(output, list):
+        text_parts: list[str] = []
+        for item in output:
+            if not isinstance(item, dict) or item.get("type") != "message":
+                continue
+            content = item.get("content")
+            if not isinstance(content, list):
+                continue
+            for part in content:
+                if not isinstance(part, dict) or part.get("type") != "output_text":
+                    continue
+                text = part.get("text")
+                if isinstance(text, str):
+                    text_parts.append(text)
+        result = "".join(text_parts).strip()
+        if result:
+            return result
+    if buffered_text.strip():
+        return buffered_text.strip()
+    raise LlmProviderError(
+        _with_request_id("DeepSeek completion has no text output", _request_id(data))
+    )
+
+
+def _response_failure_reason(data: dict[str, object]) -> str:
+    error = data.get("error")
+    if isinstance(error, dict):
+        message = error.get("message")
+        if isinstance(message, str) and message.strip():
+            return _with_request_id(
+                f"DeepSeek response failed: {_sanitize_provider_message(message)}",
+                _request_id(data),
             )
-        message = choices[0].get("message")
-        if not isinstance(message, dict):
-            raise LlmGatewayError(
-                _with_request_id("LLM Gateway completion has no message", _request_id(data))
-            )
-        content = message.get("content")
-        if not isinstance(content, str):
-            raise LlmGatewayError(
-                _with_request_id("LLM Gateway completion has no text content", _request_id(data))
-            )
-        return content
+    incomplete = data.get("incomplete_details")
+    if isinstance(incomplete, dict) and isinstance(incomplete.get("reason"), str):
+        return _with_request_id(
+            f"DeepSeek response is incomplete ({incomplete['reason']})", _request_id(data)
+        )
+    return _with_request_id("DeepSeek response did not complete", _request_id(data))
 
 
 TALK_MAP_SCHEMA: dict[str, object] = {
@@ -367,7 +478,7 @@ def _format_provider_http_error(response: httpx.Response) -> tuple[str, str]:
             if isinstance(raw_message, str) and raw_message.strip():
                 provider_message = _sanitize_provider_message(raw_message)
 
-    detail = f"LLM Gateway returned HTTP {response.status_code}"
+    detail = f"LLM provider returned HTTP {response.status_code}"
     if provider_code is not None:
         detail += f" (provider code {provider_code})"
     if provider_message is not None:
@@ -458,7 +569,7 @@ def _structured_output_contract(name: str) -> str:
 
 def _parse_continuation(text: str) -> str:
     if not 40 <= len(text.split()) <= 70:
-        raise LlmGatewayError("Continuation must contain 40 to 70 words")
+        raise LlmProviderError("Continuation must contain 40 to 70 words")
     return text
 
 
@@ -485,9 +596,9 @@ def _parse_candidates(payload: dict[str, object]) -> list[str]:
     return candidates
 
 
-def _structured_output_diagnostic(attempt: int, error: LlmGatewayError, content: str) -> str:
+def _structured_output_diagnostic(attempt: int, error: LlmProviderError, content: str) -> str:
     return (
-        f"LLM Gateway structured output validation failed (attempt {attempt}/2): {error}; "
+        f"LLM provider structured output validation failed (attempt {attempt}/2): {error}; "
         f"model_output={_sanitize_model_output(content)}"
     )
 
@@ -513,10 +624,10 @@ def _parse_json_object(content: str) -> dict[str, object]:
                 continue
             if isinstance(parsed, dict):
                 return cast(dict[str, object], parsed)
-        raise LlmGatewayError("LLM Gateway returned invalid JSON") from direct_error
+        raise LlmProviderError("LLM provider returned invalid JSON") from direct_error
 
     if not isinstance(parsed, dict):
-        raise LlmGatewayError("LLM Gateway returned an invalid object")
+        raise LlmProviderError("LLM provider returned an invalid object")
     return cast(dict[str, object], parsed)
 
 
@@ -571,11 +682,11 @@ def _parse_talk_map(payload: dict[str, object]) -> TalkMap:
     title = _required_bounded_string(payload, "title", 160)
     raw_nodes = payload.get("nodes")
     if not isinstance(raw_nodes, list) or not 3 <= len(raw_nodes) <= 7:
-        raise LlmGatewayError("Generated Talk Map must contain between 3 and 7 nodes")
+        raise LlmProviderError("Generated Talk Map must contain between 3 and 7 nodes")
     nodes: list[TalkMapNode] = []
     for index, raw_node in enumerate(raw_nodes):
         if not isinstance(raw_node, dict):
-            raise LlmGatewayError("Generated Talk Map contains an invalid node")
+            raise LlmProviderError("Generated Talk Map contains an invalid node")
         nodes.append(
             TalkMapNode(
                 id=f"node-{index + 1}",
@@ -604,12 +715,12 @@ def _parse_feedback(payload: dict[str, object]) -> Feedback:
 def _parse_hint(payload: dict[str, object]) -> Hint:
     raw_level = payload.get("level")
     if not isinstance(raw_level, int) or isinstance(raw_level, bool) or raw_level not in {2, 3}:
-        raise LlmGatewayError("LLM Gateway field 'level' must be 2 or 3")
+        raise LlmProviderError("LLM provider field 'level' must be 2 or 3")
     level: Literal[2, 3] = 2 if raw_level == 2 else 3
     continuation = _parse_continuation(_required_bounded_string(payload, "continuation", 1200))
     evidence = payload.get("evidence")
     if not isinstance(evidence, str) or len(evidence) > 600:
-        raise LlmGatewayError("Hint evidence must be a string of at most 600 characters")
+        raise LlmProviderError("Hint evidence must be a string of at most 600 characters")
     return Hint(
         level=level,
         keyword=_required_bounded_string(payload, "keyword", 240),
@@ -657,28 +768,30 @@ def _talk_map_node_to_dict(node: TalkMapNode | None) -> dict[str, object] | None
 def _required_string(data: dict[str, object], key: str) -> str:
     value = data.get(key)
     if not isinstance(value, str) or not value.strip():
-        raise LlmGatewayError(f"LLM Gateway field {key!r} is missing")
+        raise LlmProviderError(f"LLM provider field {key!r} is missing")
     return value.strip()
 
 
 def _required_bounded_string(data: dict[str, object], key: str, max_length: int) -> str:
     value = _required_string(data, key)
     if len(value) > max_length:
-        raise LlmGatewayError(f"LLM Gateway field {key!r} exceeds the {max_length}-character limit")
+        raise LlmProviderError(
+            f"LLM provider field {key!r} exceeds the {max_length}-character limit"
+        )
     return value
 
 
 def _string_list(data: dict[str, object], key: str) -> list[str]:
     value = data.get(key)
     if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
-        raise LlmGatewayError(f"LLM Gateway field {key!r} is invalid")
+        raise LlmProviderError(f"LLM provider field {key!r} is invalid")
     return [item.strip() for item in value if item.strip()]
 
 
 def _required_string_list(data: dict[str, object], key: str) -> list[str]:
     values = _string_list(data, key)
     if not values:
-        raise LlmGatewayError(f"LLM Gateway field {key!r} must contain text")
+        raise LlmProviderError(f"LLM provider field {key!r} must contain text")
     return values
 
 
@@ -690,9 +803,9 @@ def _required_bounded_string_list(
 ) -> list[str]:
     values = _required_string_list(data, key)
     if len(values) > max_items:
-        raise LlmGatewayError(f"LLM Gateway field {key!r} contains too many items")
+        raise LlmProviderError(f"LLM provider field {key!r} contains too many items")
     if any(len(value) > max_item_length for value in values):
-        raise LlmGatewayError(
-            f"LLM Gateway field {key!r} contains text longer than {max_item_length} characters"
+        raise LlmProviderError(
+            f"LLM provider field {key!r} contains text longer than {max_item_length} characters"
         )
     return values

@@ -7,7 +7,7 @@ from dataclasses import replace
 
 from suaraai.application.ports import HintGenerator
 from suaraai.domain.copilot import Hint, HintContext, TalkMap
-from suaraai.infrastructure.llm_gateway import LlmGatewayError
+from suaraai.infrastructure.llm_gateway import LlmProviderError
 
 logger = logging.getLogger(__name__)
 
@@ -39,10 +39,14 @@ class ResilientHintGenerator:
                     previous_hints,
                     context,
                 )
-        except (LlmGatewayError, TimeoutError) as exc:
+        except (LlmProviderError, TimeoutError) as exc:
             logger.warning(
                 "Realtime AI hint unavailable; using deterministic fallback: %s",
-                exc.diagnostic_message if isinstance(exc, LlmGatewayError) else "deadline exceeded",
+                (
+                    exc.diagnostic_message
+                    if isinstance(exc, LlmProviderError)
+                    else "deadline exceeded"
+                ),
             )
             fallback = await self._fallback.generate_hint(
                 talk_map,

@@ -23,7 +23,7 @@ from suaraai.infrastructure.deterministic import (
 from suaraai.infrastructure.documents import LocalDocumentParser
 from suaraai.infrastructure.embeddings import LocalEmbeddingService
 from suaraai.infrastructure.hint_generator import ResilientHintGenerator
-from suaraai.infrastructure.llm_gateway import AssemblyAILlmGateway
+from suaraai.infrastructure.llm_gateway import DeepSeekLlm
 from suaraai.infrastructure.settings import Settings
 from suaraai.infrastructure.talk_map_generator import ResilientTalkMapGenerator
 
@@ -49,23 +49,22 @@ def create_services(
     else:
         repository = InMemorySessionRepository()
 
-    gateway = AssemblyAILlmGateway(
-        api_key=settings.assemblyai_api_key,
-        model=settings.llm_model,
-        base_url=settings.llm_gateway_base_url,
-        fallback_model=settings.llm_fallback_model,
+    gateway = DeepSeekLlm(
+        api_key=settings.deepseek_api_key,
+        model=settings.deepseek_model,
+        base_url=settings.deepseek_base_url,
     )
     generator = (
         ResilientTalkMapGenerator(gateway, DeterministicTalkMapGenerator())
-        if settings.assemblyai_api_key
+        if settings.deepseek_api_key
         else DeterministicTalkMapGenerator()
     )
     feedback_generator: FeedbackGenerator = (
-        gateway if settings.assemblyai_api_key else DeterministicFeedbackGenerator()
+        gateway if settings.deepseek_api_key else DeterministicFeedbackGenerator()
     )
     hint_generator = (
         ResilientHintGenerator(gateway, DeterministicHintGenerator())
-        if settings.assemblyai_api_key
+        if settings.deepseek_api_key
         else DeterministicHintGenerator()
     )
     answerer: QuestionAnswerer = gateway

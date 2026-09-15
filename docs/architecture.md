@@ -22,9 +22,11 @@ imports.
   questions within one session.
 
 `infrastructure` implements the ports. The default production path uses the
-AssemblyAI LLM Gateway, AssemblyAI temporary STT tokens, PostgreSQL/pgvector,
-and the local FastEmbed model. Deterministic Talk Map, hint, and feedback
-adapters keep the core flow usable when no AssemblyAI key is configured.
+DeepSeek Responses API for Talk Maps, hints, feedback, and Q&A; AssemblyAI
+temporary STT tokens; PostgreSQL/pgvector; and the local FastEmbed model.
+Deterministic Talk Map, hint, and feedback adapters keep the core flow usable
+when no DeepSeek key is configured. Structured provider calls use JSON Schema;
+hint SSE output is buffered until the completed response is locally validated.
 
 The browser owns sample-based pause detection, a revision-aware transcript
 reducer, and an independently testable assistant controller. Final and partial
@@ -65,8 +67,8 @@ schema must be migrated deliberately.
 
 ## Provider failure boundaries
 
-AssemblyAI and LLM Gateway errors are converted into application errors. A
-failure to obtain a realtime token does not prevent local recording or local
-pause guidance; only the transcript is unavailable. Audio initialization
-failure still leaves recording and manual hints available. Document parsing
-and embedding failures stop that upload and do not create partial chunks.
+AssemblyAI and DeepSeek errors are converted into application errors. A failure
+to obtain a realtime token does not prevent local recording or local pause
+guidance; only the transcript is unavailable. Audio initialization failure still
+leaves recording and manual hints available. Document parsing and embedding
+failures stop that upload and do not create partial chunks.

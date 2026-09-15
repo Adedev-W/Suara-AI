@@ -12,7 +12,7 @@ from suaraai.infrastructure.deterministic import (
     DeterministicTalkMapGenerator,
 )
 from suaraai.infrastructure.hint_generator import ResilientHintGenerator
-from suaraai.infrastructure.llm_gateway import LlmGatewayError
+from suaraai.infrastructure.llm_gateway import LlmProviderError
 
 
 class _SuccessfulHintGenerator:
@@ -52,7 +52,7 @@ class _FailingHintGenerator:
         context: HintContext | None = None,
     ) -> Hint:
         del talk_map, active_index, recent_transcript, covered_keywords, previous_hints
-        raise LlmGatewayError("provider timed out")
+        raise LlmProviderError("provider timed out")
 
 
 async def _prepared_hint_use_case(generator: HintGenerator) -> tuple[GenerateHint, Session]:

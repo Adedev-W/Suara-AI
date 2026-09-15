@@ -78,17 +78,17 @@ Copy the safe template before local development:
 cp .env.example .env
 ```
 
-Set `ASSEMBLYAI_API_KEY` for realtime transcription and AssemblyAI LLM Gateway
-generation. The backend can prepare sessions and produce deterministic local
-feedback without the key, but realtime STT and provider-backed Talk Maps,
-feedback, and Q&A require it.
+Set `ASSEMBLYAI_API_KEY` for realtime transcription. Set `DEEPSEEK_API_KEY` for
+provider-backed Talk Maps, real-time hints, speaking feedback, and Q&A. Without
+the DeepSeek key, the backend uses deterministic Talk Maps, hints, and feedback;
+material Q&A is unavailable.
 
-The default LLM model is `qwen3.5-4b-32k-fast`. Talk Maps and speaking feedback
-ask the model for JSON in the prompt and validate the response locally, because
-this fast model is configured for text/streaming rather than provider-enforced
-JSON schema or tool calling. The model must be enabled for the configured
-AssemblyAI API key; set `SUARAAI_LLM_MODEL` and `SUARAAI_LLM_FALLBACK_MODEL` to
-account-enabled models when needed.
+The default model is `deepseek-flash`. Talk Maps, real-time hints, and speaking
+feedback use the DeepSeek Responses API with JSON Schema output. Hint streaming
+is buffered by the backend and shown only after the complete JSON object passes
+local validation, so a partial model response never reaches the learner. Set
+`SUARAAI_DEEPSEEK_MODEL` or `SUARAAI_DEEPSEEK_BASE_URL` only when your DeepSeek
+account requires a different supported model or endpoint.
 
 `SUARAAI_DATABASE_URL` enables PostgreSQL persistence. When it is empty, the
 backend uses an in-memory repository with a 24-hour session lifetime, which is

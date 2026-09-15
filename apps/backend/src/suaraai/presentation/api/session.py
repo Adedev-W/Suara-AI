@@ -13,7 +13,7 @@ from suaraai.application.session import (
     SessionNotFoundError,
     UpdateTalkMap,
 )
-from suaraai.infrastructure.llm_gateway import LlmGatewayError
+from suaraai.infrastructure.llm_gateway import LlmProviderError
 from suaraai.presentation.api.schemas import (
     CompleteSessionRequest,
     CompleteSessionResponse,
@@ -42,7 +42,7 @@ def create_session_router(
             session = await prepare_session.execute(request.input_kind, request.input_text)
         except SessionInputError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
-        except LlmGatewayError as exc:
+        except LlmProviderError as exc:
             logger.warning("Speaking plan generation failed: %s", exc.diagnostic_message)
             raise HTTPException(status_code=502, detail=str(exc)) from exc
         return SessionResponse.from_domain(session)
@@ -80,7 +80,7 @@ def create_session_router(
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         except SessionNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
-        except LlmGatewayError as exc:
+        except LlmProviderError as exc:
             logger.warning("Speaking feedback generation failed: %s", exc.diagnostic_message)
             raise HTTPException(status_code=502, detail=str(exc)) from exc
         return CompleteSessionResponse(
@@ -109,7 +109,7 @@ def create_session_router(
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         except SessionNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
-        except LlmGatewayError as exc:
+        except LlmProviderError as exc:
             logger.info("Realtime hint generation unavailable: %s", exc.diagnostic_message)
             raise HTTPException(status_code=502, detail=str(exc)) from exc
         return HintResponse(

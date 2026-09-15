@@ -24,6 +24,9 @@ services:
       SUARAAI_APP_NAME: ${SUARAAI_APP_NAME:-SuaraAI API}
       SUARAAI_DATABASE_URL: ${SUARAAI_DATABASE_URL:-postgresql+asyncpg://suaraai:suaraai@database:5432/suaraai}
       ASSEMBLYAI_API_KEY: ${ASSEMBLYAI_API_KEY:-}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      SUARAAI_DEEPSEEK_BASE_URL: ${SUARAAI_DEEPSEEK_BASE_URL:-https://api.deepseek.com}
+      SUARAAI_DEEPSEEK_MODEL: ${SUARAAI_DEEPSEEK_MODEL:-deepseek-flash}
     ports:
       - "8000:8000"
     healthcheck:

@@ -4,7 +4,7 @@ import logging
 
 from suaraai.application.ports import TalkMapGenerator
 from suaraai.domain.copilot import InputKind, TalkMap
-from suaraai.infrastructure.llm_gateway import LlmGatewayError
+from suaraai.infrastructure.llm_gateway import LlmProviderError
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +19,7 @@ class ResilientTalkMapGenerator:
     async def generate(self, input_kind: InputKind, input_text: str) -> TalkMap:
         try:
             return await self._primary.generate(input_kind, input_text)
-        except LlmGatewayError as exc:
+        except LlmProviderError as exc:
             logger.warning(
                 "Talk Map generation unavailable; using deterministic fallback: %s",
                 exc.diagnostic_message,

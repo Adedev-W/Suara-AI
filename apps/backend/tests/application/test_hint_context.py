@@ -14,8 +14,8 @@ from suaraai.infrastructure.deterministic import (
 )
 from suaraai.infrastructure.hint_generator import ResilientHintGenerator
 from suaraai.infrastructure.llm_gateway import (
-    AssemblyAILlmGateway,
-    LlmGatewayError,
+    DeepSeekLlm,
+    LlmProviderError,
     _parse_hint,
     _parse_talk_map,
 )
@@ -93,21 +93,25 @@ def test_hint_parser_requires_substantive_continuation_and_bounded_evidence() ->
         "evidence": "",
     }
     assert _parse_hint(payload).continuation == CONTINUATION
-    with pytest.raises(LlmGatewayError, match="40 to 70"):
+    with pytest.raises(LlmProviderError, match="40 to 70"):
         _parse_hint({**payload, "continuation": "What is AI?"})
-    with pytest.raises(LlmGatewayError, match="evidence"):
+    with pytest.raises(LlmProviderError, match="evidence"):
         _parse_hint({**payload, "evidence": "x" * 601})
 
 
-class SlowRetryGateway(AssemblyAILlmGateway):
+class SlowRetryGateway(DeepSeekLlm):
     async def _completion(
         self,
         system: str,
         user: str,
-        post_process_json: bool = False,
         max_tokens: int = 1400,
         timeout_seconds: float | None = None,
+        schema_name: str | None = None,
+        schema: dict[str, object] | None = None,
+        stream: bool = False,
+        disable_thinking: bool = False,
     ) -> str:
+        del system, user, max_tokens, timeout_seconds, schema_name, schema, stream, disable_thinking
         await asyncio.sleep(2)
         return "{}"
 
@@ -200,7 +204,7 @@ def test_talk_map_falls_back_when_the_llm_response_has_invalid_structure() -> No
     class FailingGenerator:
         async def generate(self, input_kind: InputKind, input_text: str) -> TalkMap:
             del input_kind, input_text
-            raise LlmGatewayError("Generated Talk Map must contain between 3 and 7 nodes")
+            raise LlmProviderError("Generated Talk Map must contain between 3 and 7 nodes")
 
     async def run() -> None:
         generator = ResilientTalkMapGenerator(FailingGenerator(), DeterministicTalkMapGenerator())

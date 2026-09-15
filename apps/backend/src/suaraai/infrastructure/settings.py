@@ -13,9 +13,9 @@ class Settings:
     assemblyai_api_key: str | None = field(default=None, repr=False)
     assemblyai_token_ttl_seconds: int = 60
     assemblyai_speech_model: str = "universal-3-5-pro"
-    llm_gateway_base_url: str = "https://llm-gateway.assemblyai.com/v1"
-    llm_model: str = "qwen3.5-4b-32k-fast"
-    llm_fallback_model: str | None = "gemini-2.5-flash-lite"
+    deepseek_api_key: str | None = field(default=None, repr=False)
+    deepseek_base_url: str = "https://api.deepseek.com"
+    deepseek_model: str = "deepseek-flash"
     embedding_model: str = "BAAI/bge-small-en-v1.5"
     max_document_size_bytes: int = 10 * 1024 * 1024
     retrieval_limit: int = 5
@@ -36,14 +36,9 @@ def load_settings() -> Settings:
         assemblyai_speech_model=os.getenv(
             "SUARAAI_ASSEMBLYAI_SPEECH_MODEL", defaults.assemblyai_speech_model
         ),
-        llm_gateway_base_url=os.getenv(
-            "SUARAAI_LLM_GATEWAY_BASE_URL", defaults.llm_gateway_base_url
-        ),
-        llm_model=os.getenv("SUARAAI_LLM_MODEL", defaults.llm_model),
-        llm_fallback_model=os.getenv(
-            "SUARAAI_LLM_FALLBACK_MODEL", defaults.llm_fallback_model or ""
-        )
-        or None,
+        deepseek_api_key=os.getenv("DEEPSEEK_API_KEY"),
+        deepseek_base_url=os.getenv("SUARAAI_DEEPSEEK_BASE_URL", defaults.deepseek_base_url),
+        deepseek_model=os.getenv("SUARAAI_DEEPSEEK_MODEL", defaults.deepseek_model),
         embedding_model=os.getenv("SUARAAI_EMBEDDING_MODEL", defaults.embedding_model),
         max_document_size_bytes=int(
             os.getenv("SUARAAI_MAX_DOCUMENT_SIZE_BYTES", str(defaults.max_document_size_bytes))

@@ -10,7 +10,7 @@ from suaraai.application.knowledge import (
     KnowledgeService,
     KnowledgeSessionNotFoundError,
 )
-from suaraai.infrastructure.llm_gateway import LlmGatewayError
+from suaraai.infrastructure.llm_gateway import LlmProviderError
 from suaraai.presentation.api.schemas import (
     DocumentIngestResponse,
     KnowledgeQueryRequest,
@@ -61,7 +61,7 @@ def create_knowledge_router(knowledge: KnowledgeService) -> APIRouter:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         except KnowledgeInputError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
-        except LlmGatewayError as exc:
+        except LlmProviderError as exc:
             raise HTTPException(
                 status_code=502, detail="Knowledge answer generation failed"
             ) from exc
