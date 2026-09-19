@@ -185,3 +185,6 @@ stripping for behavioral tests, without a test dependency. Type checking remains
 a separate command. Browser behavior and the text-based backend scenario are documented in
 [docs/validation.md](docs/validation.md).
 
+Run `make format` when source formatting needs to be applied. Never commit
+`.env`, credentials, raw recordings, generated model files, virtual
+environments, or `node_modules`.
