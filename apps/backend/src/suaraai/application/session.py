@@ -120,6 +120,7 @@ class GenerateHint:
         covered_keywords: list[str],
         previous_hints: list[str],
         final_transcript: str = "",
+        context_id: str = "",
     ) -> Hint:
         session = await self._repository.get(session_id, access_token)
         if session is None:
@@ -134,7 +135,7 @@ class GenerateHint:
             recent_transcript.strip(),
             covered_keywords,
             previous_hints,
-            HintContext(session.input_text, final_transcript),
+            HintContext(session.input_text, final_transcript, context_id),
         )
         # A model suggestion cannot advance permanent progress without spoken evidence.
         if generated.node_id not in {node.id for node in session.talk_map.nodes}:

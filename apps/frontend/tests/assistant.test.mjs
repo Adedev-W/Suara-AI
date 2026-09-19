@@ -11,16 +11,17 @@ const continuation = 'It focuses on building systems that can perform tasks such
 const node = { id: 'node-1', title: 'AI', intent: 'Explain AI', keywords: ['intelligence'], semantic_summary: 'AI and its uses', starter: 'What is AI?', next_prompt: 'Why does it matter?', status: 'active', rescue_candidates: [continuation, 'A second distinct candidate.', 'A third distinct candidate.'] }
 const talkMap = { title: 'Artificial intelligence', nodes: [node] }
 const context = { session: { session_id: 'one', access_token: 'test', input_kind: 'topic', talk_map: talkMap }, talkMap, activeIndex: 0,
-  recentTranscript: 'Artificial intelligence is a branch of computer science', finalTranscript: '', coveredConcepts: [], coveredKeywords: [] }
+  recentTranscript: 'Artificial intelligence is a branch of computer science',
+  finalTranscript: 'Artificial intelligence is a branch of computer science', coveredConcepts: [], coveredKeywords: [] }
 
-function harness() {
+function harness(initialContext = context) {
   let now = 0
   const logs = [], views = [], calls = [], semantics = []
   const controller = new AssistantController({ now: () => now, wallNow: () => 100000 + now,
     render: (view) => views.push(view), log: (entry) => logs.push(entry), semanticNode: (...args) => semantics.push(args),
     request: (_session, input, signal) => new Promise((resolve, reject) => calls.push({ input, signal, resolve, reject })) })
   controller.begin()
-  controller.update(context)
+  controller.update(initialContext)
   return { controller, logs, views, calls, semantics,
     advance: (ms) => { now += ms; controller.tick() },
     blank: () => controller.stuck({ startedAt: 100000 + now - 1500, detectedAt: 100000 + now, durationMs: 1500 }) }
@@ -29,28 +30,41 @@ const settle = () => new Promise((resolve) => setImmediate(resolve))
 const aiHint = (call) => ({ level: 2, keyword: 'AI', starter: 'AI can help.', nextIdea: 'Consider email.', continuation,
   source: 'ai', contextId: call.input.contextId, nodeId: node.id, evidence: '' })
 
-test('adaptive pause distinguishes unfinished speech and complete sentences', () => {
+test('automatic pause is always 1.5 seconds', () => {
   assert.equal(pauseThreshold('AI is', true), 1500)
   assert.equal(pauseThreshold('This works because.', true), 1500)
-  assert.equal(pauseThreshold('AI detects spam.', true), 2500)
-  assert.equal(pauseThreshold('AI is', false), 2500)
+  assert.equal(pauseThreshold('AI detects spam.', true), 1500)
+  assert.equal(pauseThreshold('AI is', false), 1500)
 })
 
-test('partial context is prefetched before blank and cached AI appears immediately', async () => {
+test('final context is prefetched before blank and cached AI appears immediately', async () => {
   const h = harness()
   h.advance(299)
   assert.equal(h.calls.length, 0)
   h.advance(1)
   assert.equal(h.calls[0].input.recentTranscript, context.recentTranscript)
-  assert.equal(h.calls[0].input.finalTranscript, '')
+  assert.equal(h.calls[0].input.finalTranscript, context.finalTranscript)
   assert.deepEqual(h.calls[0].input.previousHints, [])
   h.calls[0].resolve(aiHint(h.calls[0]))
   await settle()
   assert.equal(h.logs.filter((entry) => entry.kind === 'hint').length, 0)
+  assert.ok(h.logs.some((entry) => entry.detail?.includes('cached for next blank')))
   h.advance(1200)
   h.blank()
   assert.equal(h.views.at(-1).hint.source, 'ai')
   assert.equal(h.logs.filter((entry) => entry.kind === 'hint').length, 1)
+})
+
+test('partial-only updates do not prefetch until final transcript advances', () => {
+  const partial = { ...context, recentTranscript: 'Artificial intelligence is', finalTranscript: '' }
+  const h = harness(partial)
+  h.advance(1000)
+  assert.equal(h.calls.length, 0)
+  h.controller.update({ ...partial, finalTranscript: partial.recentTranscript })
+  h.advance(299)
+  assert.equal(h.calls.length, 0)
+  h.advance(1)
+  assert.equal(h.calls.length, 1)
 })
 
 test('AI replaces fallback once within reading window, but never after speech resumes', async () => {
@@ -108,7 +122,8 @@ test('semantic progress needs final speech evidence, never a displayed hint', ()
 test('substantive context changes discard old responses and queue only latest input', async () => {
   const h = harness()
   h.advance(300)
-  h.controller.update({ ...context, recentTranscript: 'AI helps doctors examine scans' })
+  h.controller.update({ ...context, recentTranscript: 'AI helps doctors examine scans',
+    finalTranscript: 'AI helps doctors examine scans' })
   h.advance(300)
   assert.equal(h.calls.length, 1)
   h.calls[0].resolve(aiHint(h.calls[0]))
@@ -173,6 +188,29 @@ test('sample-based detector ignores short noise and requires new confirmed speec
   assert.equal(blanks.length, 2)
 })
 
+test('isolated noise stays inside a pause while sustained speech restarts it', () => {
+  let clock = 0
+  const blanks = []
+  const detector = new SpeechPauseDetector(() => {}, (blank) => blanks.push(blank), () => 1500, 100000, () => 100000 + clock)
+  detector.setConnected(true)
+  const feed = (rms, duration) => { clock += duration; detector.observe(rms, duration) }
+  feed(0.1, 200)
+  detector.confirmSpeech(clock)
+  feed(0, 1000)
+  feed(0.1, 150)
+  feed(0, 350)
+  assert.equal(blanks.length, 1)
+  assert.equal(blanks[0].durationMs, 1500)
+
+  feed(0.1, 200)
+  detector.confirmSpeech(clock)
+  feed(0, 1499)
+  assert.equal(blanks.length, 1)
+  feed(0, 1)
+  assert.equal(blanks.length, 2)
+  assert.equal(blanks[1].durationMs, 1500)
+})
+
 test('turn revisions replace partials and duplicate finals without duplicating log or speech', () => {
   let state = createRecordingProgress(talkMap)
   const turn = { type: 'transcript-turn', turnOrder: 0, text: 'AI is', isFinal: false, at: 1000, endedAt: 1800, receivedAt: 2500 }
@@ -188,6 +226,16 @@ test('turn revisions replace partials and duplicate finals without duplicating l
   assert.equal(state.conversationLog.length, 1)
   assert.equal(state.conversationLog[0].at, 1000)
   assert.match(formatConversationLog(state.conversationLog), /700 ms after speech ended/)
+})
+
+test('conversation log orders blanks by detection time and includes milliseconds', () => {
+  const base = Date.UTC(2026, 0, 1, 12, 0, 0)
+  const formatted = formatConversationLog([
+    { kind: 'blank', at: base, detectedAt: base + 1500, durationMs: 1500 },
+    { kind: 'diagnostic', at: base + 1000, detail: 'Candidate ready' },
+  ])
+  assert.ok(formatted.indexOf('Candidate ready') < formatted.indexOf('Blank detected'))
+  assert.match(formatted, /\d{2}:\d{2}:\d{2}\.\d{3}/)
 })
 
 test('STT parses word offsets and provider lifecycle messages; rejects malformed turns', () => {

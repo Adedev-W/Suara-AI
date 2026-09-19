@@ -10,7 +10,7 @@ export type HintInput = {
   activeIndex: number; recentTranscript: string; finalTranscript: string
   coveredKeywords: string[]; previousHints: string[]; contextId: string
 }
-type Request = { key: string; id: string; controller: AbortController; startedAt: number }
+type Request = { key: string; finalKey: string; id: string; controller: AbortController; startedAt: number }
 type Episode = { blank: SpeechPauseDetection | null; key: string; shownAt: number; replaced: boolean; frozen: boolean }
 type Dependencies = {
   now: () => number; wallNow: () => number
@@ -24,11 +24,12 @@ export function contextKey(context: AssistantContext): string {
   return `${context.talkMap?.nodes[context.activeIndex]?.id ?? ''}:${words(context.recentTranscript).join(' ')}`
 }
 
-export function pauseThreshold(text: string, connected: boolean): number {
-  if (!connected) return 2500
-  // A forced STT endpoint can end mid-thought; finality alone is not sentence completion.
-  const unfinished = /\b(and|or|but|because|so|the|a|an|of|to|with|is|are|was|were)[.!?]?\s*$/i.test(text)
-  return !unfinished && /[.!?]["')\]]?\s*$/.test(text) ? 2500 : 1500
+function finalContextKey(context: AssistantContext): string {
+  return `${context.talkMap?.nodes[context.activeIndex]?.id ?? ''}:${words(context.finalTranscript).join(' ')}`
+}
+
+export function pauseThreshold(_text: string, _connected: boolean): number {
+  return 1500
 }
 
 /** Owns request and display lifetimes independently; React only renders snapshots. */
@@ -39,9 +40,11 @@ export class AssistantController {
   private generation = 0
   private revision = 0
   private key = ''
+  private finalKey = ''
+  private pendingFinalKey = ''
   private changedAt = 0
   private lastRequestedAt = -Infinity
-  private attemptedKey = ''
+  private attemptedFinalKey = ''
   private request: Request | null = null
   private cached: { key: string; hint: Hint } | null = null
   private episode: Episode | null = null
@@ -56,7 +59,9 @@ export class AssistantController {
     this.generation += 1
     this.history = []
     this.key = ''
-    this.attemptedKey = ''
+    this.finalKey = ''
+    this.pendingFinalKey = ''
+    this.attemptedFinalKey = ''
     this.lastRequestedAt = -Infinity
   }
 
@@ -76,11 +81,17 @@ export class AssistantController {
     }
     this.context = context
     const key = contextKey(context)
-    if (key === this.key) return
-    this.key = key
-    this.revision += 1
+    const finalKey = finalContextKey(context)
+    if (key !== this.key) {
+      this.key = key
+      this.revision += 1
+      this.changedAt = this.deps.now()
+      this.cached = null
+    }
+    if (finalKey === this.finalKey) return
+    this.finalKey = finalKey
+    this.pendingFinalKey = context.finalTranscript.trim() ? finalKey : ''
     this.changedAt = this.deps.now()
-    this.cached = null
     // An in-flight request settles before the queued latest context is dispatched.
     // This avoids creating parallel provider work when browser cancellation cannot stop it.
   }
@@ -97,7 +108,8 @@ export class AssistantController {
     if (this.view.personalizing && this.episode && now - this.episode.shownAt > 2000) {
       this.publish({ ...this.view, personalizing: false })
     }
-    if (this.request || this.attemptedKey === this.key || !this.context.recentTranscript.trim()
+    if (this.request || !this.pendingFinalKey || this.attemptedFinalKey === this.pendingFinalKey
+      || !this.context.recentTranscript.trim()
       || now - this.changedAt < 300 || now - this.lastRequestedAt < 3000) return
     this.prepare()
   }
@@ -133,11 +145,12 @@ export class AssistantController {
 
   private prepare(): void {
     const context = this.context!
-    const request: Request = { key: this.key, id: `${this.generation}:${++this.revision}`,
+    const request: Request = { key: this.key, finalKey: this.pendingFinalKey,
+      id: `${this.generation}:${++this.revision}`,
       controller: new AbortController(), startedAt: this.deps.now() }
     this.request = request
     this.lastRequestedAt = request.startedAt
-    this.attemptedKey = request.key
+    this.attemptedFinalKey = request.finalKey
     this.diagnostic(`Hint requested (${request.id})`)
     void this.deps.request(context.session!, {
       activeIndex: context.activeIndex, recentTranscript: context.recentTranscript,
@@ -165,7 +178,9 @@ export class AssistantController {
         && this.deps.now() - episode.shownAt <= 2000) {
         episode.replaced = true
         this.display(hint)
-      } else if (episode) this.diagnostic('AI replacement withheld: reading window closed or speech resumed')
+      } else if (episode?.key === request.key) {
+        this.diagnostic('AI replacement withheld: reading window closed or speech resumed')
+      } else this.diagnostic('AI candidate cached for next blank')
       if (hint.nodeId && hint.evidence) this.deps.semanticNode(hint.nodeId, hint.evidence)
     }).catch((cause: unknown) => {
       if (this.request !== request || !this.running) return

@@ -82,6 +82,7 @@ class Hint:
 class HintContext:
     source_material: str = ""
     final_transcript: str = ""
+    context_id: str = ""
 
 
 @dataclass(frozen=True, slots=True)

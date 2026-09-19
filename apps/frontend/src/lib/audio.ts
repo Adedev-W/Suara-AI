@@ -68,17 +68,21 @@ export class SpeechPauseDetector {
     const threshold = Math.max(0.004, this.noiseFloor * (this.activeMs > 0 ? 2 : 3))
     if (rms < threshold) this.noiseFloor = this.noiseFloor * 0.98 + rms * 0.02
     if (rms >= threshold) {
-      this.silenceMs = 0
       this.activeMs += durationMs
-      if (this.activeMs >= 200 && this.state !== 'speaking') {
-        this.state = 'speaking'
-        this.onSpeechStarted()
+      if (this.activeMs >= 200) {
+        this.silenceMs = 0
+        if (this.state !== 'speaking') {
+          this.state = 'speaking'
+          this.onSpeechStarted()
+        }
       }
       return
     }
+    const toleratedNoiseMs = this.activeMs < 200 ? this.activeMs : 0
     this.activeMs = 0
     if (this.state !== 'speaking') return
-    this.silenceMs += durationMs
+    // Isolated noise is part of the pause; only sustained activity restarts the timer.
+    this.silenceMs += toleratedNoiseMs + durationMs
     if (this.silenceMs < this.threshold(this.connected)) return
     if (this.connected && this.confirmedEnd <= this.consumedEnd) return
     this.state = 'stuck'

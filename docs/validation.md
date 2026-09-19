@@ -52,20 +52,21 @@ browser layout.
 4. Start recording. Confirm the timer and listening status update in real time.
    Speak a sentence and confirm partial words appear in the Live transcript
    panel while you speak, then settle into the final transcript when the turn
-   completes. Confirm partial text already informs hints, and permanent Talk
-   Map position changes require an AI suggestion backed by final speech.
+   completes. Confirm partial text updates visible context without dispatching a
+   hint request until final context advances, and permanent Talk Map position
+   changes require an AI suggestion backed by final speech.
 5. Stay silent for more than 1.5 seconds before first speaking and confirm no
    automatic hint appears. Speak, pause for 1.4 seconds, and confirm no hint;
-   continue an unfinished phrase's pause beyond 1.5 seconds and confirm a cached
-   AI or local candidate appears. After a complete sentence, confirm the delay
-   is 2.5 seconds. Repeat with quiet speech, short clicks and background noise;
+   continue any pause beyond 1.5 seconds and confirm a cached AI or local
+   candidate appears. Repeat with quiet speech, short clicks and background
+   noise; activity shorter than 200 ms must not restart the pause timer, and
    noise without new recognized speech must not generate repeated blank events.
-6. Press Hint and confirm a readable continuation appears. AI-generated hints
-   and prepared candidates should contain 40–70 words. Confirm a fallback can
-   be replaced once within two seconds; then it stays stable. Resume speaking
-   and read along: the card must remain visible, and late AI responses must not
+6. Press Hint and confirm a readable continuation appears. Live AI hints should
+   target 30–70 words; prepared candidates should contain 40–70 words. Confirm
+   a fallback can be replaced once within two seconds; then it stays stable.
+   Resume speaking and read along: the card must remain visible, and late AI responses must not
    change its text. Dismiss the card and verify the next genuine blank can show
-   guidance. With STT disconnected, confirm recording and local 2.5-second
+   guidance. With STT disconnected, confirm recording and local 1.5-second
    pause guidance continue. Legacy maps may retain short fallback prompts.
 7. Stop recording, play the local preview, and download the WebM recording.
    Open View conversation log and confirm a vertical timeline contains each

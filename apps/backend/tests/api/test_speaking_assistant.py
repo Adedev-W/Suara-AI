@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 
 import httpx
+import pytest
 
 from suaraai.infrastructure.settings import Settings
 from suaraai.main import create_app
@@ -68,7 +70,9 @@ def test_hint_rejects_an_active_index_outside_the_session_talk_map() -> None:
     asyncio.run(run())
 
 
-def test_hint_endpoint_returns_a_complete_deterministic_fallback() -> None:
+def test_hint_endpoint_returns_a_complete_deterministic_fallback(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     async def run() -> None:
         application = create_app(Settings(database_url=None, assemblyai_api_key=None))
         transport = httpx.ASGITransport(app=application)
@@ -92,4 +96,8 @@ def test_hint_endpoint_returns_a_complete_deterministic_fallback() -> None:
         assert payload["node_id"] == "node-1"
         assert payload["continuation"] == ""
 
+    caplog.set_level(logging.INFO)
     asyncio.run(run())
+    assert "context_id='take-1:revision-2'" in caplog.text
+    assert "source=deterministic" in caplog.text
+    assert "generation_status=local_fallback" in caplog.text

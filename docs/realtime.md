@@ -23,26 +23,29 @@ partial text (up to 6,000 characters); preview and feedback use final text only.
 Local activity requires 200 ms above an adaptive threshold. While STT is online,
 a new automatic blank also requires new provider-confirmed speech. Late final
 messages from an earlier pause cannot rearm noise-only episodes. Initial silence
-does not display hints. Once armed, a hanging phrase waits 1,500 ms; terminal
-punctuation waits 2,500 ms, except trailing connectives such as “because”.
-This is a timing heuristic, not a reliable inference of the speaker's intentions.
-When STT fails, local audio guidance uses a conservative 2,500 ms pause.
+does not display hints. Once armed, every pause waits 1,500 ms, including when
+STT is unavailable. An isolated activity burst shorter than 200 ms remains part
+of the pause; only sustained activity restarts the timer.
 
 ## Preparing and displaying hints
 
 AI-generated Talk Maps contain three 40–70-word candidates per node: explanation,
 example and transition. Older/deterministic maps without candidates retain the
-legacy starter and prompt. New live hints carry a continuation of 40–70 words
-and a semantic node suggestion. The server supplies the original input material,
+legacy starter and prompt. New live hints target a 30–70-word continuation and
+carry a semantic node suggestion. Word count is a soft constraint: a structurally
+valid continuation outside the target is accepted and logged without another
+provider attempt. The server supplies the original input material,
 the map, final and partial context, and up to five actually displayed hints.
 Only an exact quote from final speech permits a permanent node-position update.
 A quote does not mark all previous topics covered.
 
-The controller debounces changed context for 300 ms and dispatches at most one
-request per three seconds, with a single request in flight and latest-context
-coalescing. Provider work is not assumed to stop when the browser aborts. A
-three-second backend deadline includes structured-output retries; the client
-aborts after four seconds. Prefetch can consume quota even when no blank occurs.
+The controller debounces finalized transcript or active-node changes for 300 ms
+and dispatches at most one request per three seconds, with a single request in
+flight and latest-context coalescing. Partial revisions update and invalidate
+context but do not dispatch provider work. Provider work is not assumed to stop
+when the browser aborts. A three-second backend deadline includes retries for
+malformed structured output; the client aborts after four seconds. Prefetch can
+consume quota even when no blank occurs.
 
 At a blank, a matching cached AI candidate or unseen local candidate appears
 immediately. A live response can replace a fallback once within two seconds,
@@ -62,8 +65,10 @@ The vertical, copyable Preview log contains speech start/end and transcript
 arrival timestamps, pause start/detection times, actually displayed hints, and
 collapsible diagnostics. Diagnostics distinguish provider fallback, request
 timeout, stale context, and reading-window suppression. Request durations and
-blank-to-display latency are recorded separately. Candidates never displayed
-are not logged as shown hints.
+blank-to-display latency are recorded separately. Backend attempt logs include
+context ID, attempt, duration, word count and outcome; completion logs add the
+final source and generation status. Candidates never displayed are not logged
+as shown hints.
 
 Stopping ends assistance, flushes audio, sends Terminate, and reads until
 Termination (or a three-second timeout). This allows the last final turn to

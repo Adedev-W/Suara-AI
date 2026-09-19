@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from uuid import UUID
 
 from fastapi import APIRouter, Header, HTTPException, status
@@ -95,6 +96,7 @@ def create_session_router(
         x_session_token: str | None = Header(default=None),
     ) -> HintResponse:
         token = _require_token(x_session_token)
+        started_at = time.perf_counter()
         try:
             generated = await generate_hint.execute(
                 UUID(session_id),
@@ -104,14 +106,29 @@ def create_session_router(
                 request.covered_keywords,
                 request.previous_hints,
                 request.final_transcript,
+                request.context_id,
             )
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         except SessionNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         except LlmProviderError as exc:
-            logger.info("Realtime hint generation unavailable: %s", exc.diagnostic_message)
+            logger.info(
+                "Realtime hint generation unavailable: context_id=%r duration_ms=%d error=%s",
+                request.context_id,
+                round((time.perf_counter() - started_at) * 1000),
+                exc.diagnostic_message,
+            )
             raise HTTPException(status_code=502, detail=str(exc)) from exc
+        logger.info(
+            "Realtime hint completed: context_id=%r duration_ms=%d source=%s "
+            "generation_status=%s word_count=%d",
+            request.context_id,
+            round((time.perf_counter() - started_at) * 1000),
+            generated.source,
+            generated.generation_status,
+            len(generated.continuation.split()),
+        )
         return HintResponse(
             level=generated.level,
             keyword=generated.keyword,

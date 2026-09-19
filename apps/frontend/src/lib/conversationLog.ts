@@ -5,6 +5,7 @@ const timestampFormatter = new Intl.DateTimeFormat('en-GB', {
   hour: '2-digit',
   minute: '2-digit',
   second: '2-digit',
+  fractionalSecondDigits: 3,
   hourCycle: 'h23',
 })
 
@@ -17,8 +18,12 @@ export function sortConversationLog(
 ): ConversationLogEntry[] {
   return entries
     .map((entry, index) => ({ entry, index }))
-    .sort((left, right) => left.entry.at - right.entry.at || left.index - right.index)
+    .sort((left, right) => observedAt(left.entry) - observedAt(right.entry) || left.index - right.index)
     .map(({ entry }) => entry)
+}
+
+function observedAt(entry: ConversationLogEntry): number {
+  return entry.kind === 'blank' ? entry.detectedAt : entry.at
 }
 
 export function hintSourceLabel(hint: Hint): string {

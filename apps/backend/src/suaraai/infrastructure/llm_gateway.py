@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
+import time
 from collections.abc import Callable, Sequence
 from typing import Literal, TypeVar, cast
 
@@ -29,6 +31,8 @@ class LlmProviderError(RuntimeError):
 
 
 _MAX_PROVIDER_ERROR_LENGTH = 400
+_REALTIME_HINT_MIN_WORDS = 30
+_REALTIME_HINT_MAX_WORDS = 70
 _SENSITIVE_ERROR_KEYS = frozenset(
     {"authorization", "api_key", "api-key", "token", "secret", "password"}
 )
@@ -115,7 +119,8 @@ class DeepSeekLlm:
         return await self._structured_completion(
             system=(
                 "Help an English learner continue their explanation. Return continuation: "
-                "40 to 70 words in 2 to 4 simple, ready-to-say sentences, naturally following "
+                "approximately 30 to 70 words in 2 to 4 simple, ready-to-say sentences; aim "
+                "for 40 to 60 words. Continue naturally from "
                 "the latest spoken words with an explanation, example or transition. Do not "
                 "repeat their introduction, ask coaching questions, or invent personal "
                 "experiences, statistics or citations. Supplied material is authoritative; "
@@ -152,6 +157,7 @@ class DeepSeekLlm:
             max_tokens=650,
             timeout_seconds=3.0,
             stream=True,
+            context_id=context.context_id,
         )
 
     async def answer(self, question: str, context: Sequence[RetrievedChunk]) -> str:
@@ -181,6 +187,7 @@ class DeepSeekLlm:
         max_tokens: int = 1400,
         timeout_seconds: float | None = None,
         stream: bool = False,
+        context_id: str = "",
     ) -> T:
         structured_system = _structured_system_prompt(system, name, schema)
         validation_error = "the previous response did not satisfy the JSON contract"
@@ -188,29 +195,81 @@ class DeepSeekLlm:
             attempt_system = structured_system
             if attempt > 1:
                 attempt_system = _structured_retry_prompt(structured_system, validation_error)
-            content = await self._completion(
-                system=attempt_system,
-                user=user,
-                max_tokens=max_tokens,
-                timeout_seconds=timeout_seconds,
-                schema_name=name,
-                schema=schema,
-                stream=stream,
-                # Structured responses are validated against a schema, so reasoning tokens
-                # only delay the result and can exhaust the output budget before JSON arrives.
-                disable_thinking=True,
-            )
+            attempt_started_at = time.perf_counter()
             try:
-                return parser(_parse_json_object(content))
+                content = await self._completion(
+                    system=attempt_system,
+                    user=user,
+                    max_tokens=max_tokens,
+                    timeout_seconds=timeout_seconds,
+                    schema_name=name,
+                    schema=schema,
+                    stream=stream,
+                    # Structured responses are validated against a schema, so reasoning tokens
+                    # only delay the result and can exhaust the output budget before JSON arrives.
+                    disable_thinking=True,
+                )
+            except asyncio.CancelledError:
+                if name == "realtime_hint":
+                    logger.info(
+                        "Realtime hint attempt completed: context_id=%r attempt=%d "
+                        "duration_ms=%d outcome=cancelled word_count=unknown",
+                        context_id,
+                        attempt,
+                        round((time.perf_counter() - attempt_started_at) * 1000),
+                    )
+                raise
+            except LlmProviderError as exc:
+                if name == "realtime_hint":
+                    logger.warning(
+                        "Realtime hint attempt completed: context_id=%r attempt=%d "
+                        "duration_ms=%d outcome=provider_error word_count=unknown error=%s",
+                        context_id,
+                        attempt,
+                        round((time.perf_counter() - attempt_started_at) * 1000),
+                        exc.diagnostic_message,
+                    )
+                raise
+            word_count: int | None = None
+            try:
+                payload = _parse_json_object(content)
+                word_count = _continuation_word_count(payload) if name == "realtime_hint" else None
+                parsed = parser(payload)
             except LlmProviderError as exc:
                 validation_error = str(exc)
-                diagnostic = _structured_output_diagnostic(attempt, exc, content)
+                diagnostic = _structured_output_diagnostic(
+                    attempt,
+                    exc,
+                    content,
+                    context_id=context_id,
+                    duration_ms=round((time.perf_counter() - attempt_started_at) * 1000),
+                    word_count=word_count,
+                )
                 logger.warning("%s", diagnostic)
                 if attempt == 2:
                     raise LlmProviderError(
                         f"{exc} after {attempt} attempts",
                         diagnostic_message=f"{exc} after {attempt} attempts; {diagnostic}",
                     ) from exc
+                continue
+            if name == "realtime_hint":
+                assert word_count is not None
+                length_status = (
+                    "in_range"
+                    if _REALTIME_HINT_MIN_WORDS <= word_count <= _REALTIME_HINT_MAX_WORDS
+                    else "out_of_range"
+                )
+                log_attempt = logger.info if length_status == "in_range" else logger.warning
+                log_attempt(
+                    "Realtime hint attempt completed: context_id=%r attempt=%d duration_ms=%d "
+                    "outcome=accepted word_count=%d length_status=%s",
+                    context_id,
+                    attempt,
+                    round((time.perf_counter() - attempt_started_at) * 1000),
+                    word_count,
+                    length_status,
+                )
+            return parsed
         raise AssertionError("Structured completion loop did not return or raise")
 
     async def _completion(
@@ -557,7 +616,8 @@ def _structured_output_contract(name: str) -> str:
     if name == "realtime_hint":
         return (
             "Return level, keyword, starter, next_idea, continuation, node_id and evidence. "
-            "continuation is 40 to 70 words in 2 to 4 speakable sentences. "
+            "continuation is approximately 30 to 70 words in 2 to 4 speakable sentences; "
+            "aim for 40 to 60 words. "
             "evidence may be empty. Use the exact node ID from the map."
         )
     return (
@@ -567,10 +627,9 @@ def _structured_output_contract(name: str) -> str:
     )
 
 
-def _parse_continuation(text: str) -> str:
-    if not 40 <= len(text.split()) <= 70:
-        raise LlmProviderError("Continuation must contain 40 to 70 words")
-    return text
+def _continuation_word_count(payload: dict[str, object]) -> int:
+    continuation = payload.get("continuation")
+    return len(continuation.split()) if isinstance(continuation, str) else 0
 
 
 def _parse_candidates(payload: dict[str, object]) -> list[str]:
@@ -596,9 +655,21 @@ def _parse_candidates(payload: dict[str, object]) -> list[str]:
     return candidates
 
 
-def _structured_output_diagnostic(attempt: int, error: LlmProviderError, content: str) -> str:
+def _structured_output_diagnostic(
+    attempt: int,
+    error: LlmProviderError,
+    content: str,
+    *,
+    context_id: str = "",
+    duration_ms: int = 0,
+    word_count: int | None = None,
+) -> str:
     return (
-        f"LLM provider structured output validation failed (attempt {attempt}/2): {error}; "
+        "LLM provider structured output validation failed "
+        f"(context_id={context_id!r}, attempt={attempt}, max_attempts=2, "
+        f"duration_ms={duration_ms}, "
+        f"word_count={word_count if word_count is not None else 'unknown'}, "
+        f"outcome=structured_validation_error): {error}; "
         f"model_output={_sanitize_model_output(content)}"
     )
 
@@ -717,7 +788,7 @@ def _parse_hint(payload: dict[str, object]) -> Hint:
     if not isinstance(raw_level, int) or isinstance(raw_level, bool) or raw_level not in {2, 3}:
         raise LlmProviderError("LLM provider field 'level' must be 2 or 3")
     level: Literal[2, 3] = 2 if raw_level == 2 else 3
-    continuation = _parse_continuation(_required_bounded_string(payload, "continuation", 1200))
+    continuation = _required_bounded_string(payload, "continuation", 1200)
     evidence = payload.get("evidence")
     if not isinstance(evidence, str) or len(evidence) > 600:
         raise LlmProviderError("Hint evidence must be a string of at most 600 characters")

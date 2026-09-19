@@ -11,11 +11,12 @@ The implementation follows the PRD through the web scope of Phase 3:
 - Phase 1: Talk Map preparation, editable ordering, anonymous sessions, camera
   preview, local video recording, and local playback/download.
 - Phase 2: AssemblyAI realtime transcription, browser-local voice activity,
-  adaptive 1.5/2.5-second pause detection, readable continuations, and manual hints.
+  1.5-second pause detection, readable continuations, and manual hints.
 - Phase 3: structured post-recording feedback, PDF/PPTX ingestion, local
   embeddings, PostgreSQL plus pgvector retrieval, and session-scoped Q&A.
 - Realtime rescue hints: deterministic progress tracking with an optional,
-  event-driven LLM cue requested only when the speaker is stuck.
+  event-driven LLM cue prepared from finalized speech and shown when the speaker
+  is stuck.
 - Conversation log: finalized speech, automatic blank episodes, and every
   visible fallback/AI hint transition are available in a copyable Preview
   timeline. The log stays in the browser for the current recording.
@@ -140,14 +141,17 @@ the long-lived provider key never reaches the browser. Realtime transport and
 audio assumptions are documented in [docs/realtime.md](docs/realtime.md).
 The hint route receives bounded final and partial transcript context. The server
 also supplies the original session material and the full Talk Map to the model.
-AI-generated maps include three ready-to-say rescue candidates per node, and
-live continuations contain 40–70 words. The browser prepares candidates after
-300 ms of stable context, at most once every three seconds with one request
-in flight. This can consume provider quota even when no hint is displayed.
+AI-generated maps include three ready-to-say 40–70-word rescue candidates per
+node. Live continuations target 30–70 words, but word count is a soft constraint
+and never causes a provider retry by itself. The browser prepares candidates
+300 ms after finalized transcript context changes, at most once every three
+seconds with one request in flight. This can consume provider quota even when no
+hint is displayed.
 
-After confirmed speech, a 1.5-second unfinished pause or 2.5-second sentence
-pause shows a matching cached AI suggestion or local candidate. A fallback can
-be replaced once within two seconds, only before speech resumes. The card
+After confirmed speech, a 1.5-second pause shows a matching cached AI suggestion
+or local candidate. Noise shorter than 200 ms does not restart the pause timer;
+sustained speech does. A fallback can be replaced once within two seconds, only
+before speech resumes. The card
 remains readable while speaking and can be dismissed. Responses for obsolete
 contexts cannot replace it. Legacy maps without candidates retain their short
 fallbacks. Provider failures include a diagnostic status in the hint response.

@@ -73,8 +73,9 @@ def test_hint_receives_original_material_and_partial_context_without_false_progr
             [],
             [],
             "AI is",
+            "take-1:revision-2",
         )
-        assert generator.context == HintContext(session.input_text, "AI is")
+        assert generator.context == HintContext(session.input_text, "AI is", "take-1:revision-2")
         assert generator.recent == "AI is a branch of computer science"
         assert result.evidence == ""
         assert result.continuation == CONTINUATION
@@ -82,7 +83,7 @@ def test_hint_receives_original_material_and_partial_context_without_false_progr
     asyncio.run(run())
 
 
-def test_hint_parser_requires_substantive_continuation_and_bounded_evidence() -> None:
+def test_hint_parser_treats_continuation_word_count_as_soft_and_bounds_evidence() -> None:
     payload: dict[str, object] = {
         "level": 2,
         "keyword": "AI",
@@ -93,8 +94,7 @@ def test_hint_parser_requires_substantive_continuation_and_bounded_evidence() ->
         "evidence": "",
     }
     assert _parse_hint(payload).continuation == CONTINUATION
-    with pytest.raises(LlmProviderError, match="40 to 70"):
-        _parse_hint({**payload, "continuation": "What is AI?"})
+    assert _parse_hint({**payload, "continuation": "What is AI?"}).continuation == "What is AI?"
     with pytest.raises(LlmProviderError, match="evidence"):
         _parse_hint({**payload, "evidence": "x" * 601})
 
