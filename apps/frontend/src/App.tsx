@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useReducer, useRef, useState, type FormEvent, type ReactNode, type RefObject } from 'react'
 import './App.css'
+import darkLogo from './assets/suaraai-logo-dark.png'
 import lightLogo from './assets/suaraai-logo-light.png'
 import { ConversationLogModal } from './components/ConversationLogModal'
 import { HintCard } from './components/HintCard'
@@ -357,7 +358,7 @@ function App() {
 }
 
 function Shell({ children }: { children: ReactNode }) {
-  return <main className="app-shell"><header className="topbar"><a className="brand" href="/" aria-label="SuaraAI home"><img src={lightLogo} alt="SuaraAI" /></a><span className="topbar-note">Speaking copilot</span><ThemePicker /></header>{children}<footer className="footer"><span>Keep your eyes on the lens.</span><span>SuaraAI / 2026</span></footer></main>
+  return <main className="app-shell"><header className="topbar"><a className="brand" href="/" aria-label="SuaraAI home"><img className="brand-logo-light" src={lightLogo} alt="SuaraAI" /><img className="brand-logo-dark" src={darkLogo} alt="" aria-hidden="true" /></a><span className="topbar-note">Speaking copilot</span><ThemePicker /></header>{children}<footer className="footer"><span>Keep your eyes on the lens.</span><span>SuaraAI / 2026</span></footer></main>
 }
 
 function SetupScreen(props: { inputKind: InputKind; setInputKind: (value: InputKind) => void; inputText: string; setInputText: (value: string) => void; onSubmit: (event: FormEvent) => void; isSubmitting: boolean; error: string }) {
