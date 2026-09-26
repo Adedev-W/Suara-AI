@@ -1,88 +1,74 @@
-# Realtime recording path
+# Realtime behavior
 
-AudioWorklet captures microphone samples and sends 50 ms PCM16 chunks at 16 kHz.
-The same samples feed an adaptive RMS/hysteresis detector. Pause duration uses
-sample counts rather than JavaScript callback cadence. Provider word offsets
-are anchored to the captured stream's start; arrival time is recorded separately.
+This document records the timing and safety rules behind realtime practice. It
+is intended for contributors debugging audio, transcript, or hint behavior.
 
-The client waits for AssemblyAI's Begin message before reporting Listening.
-For universal-3-5-pro it explicitly selects balanced mode, continuous partials,
-128 ms minimum turn silence and 800 ms maximum turn silence. Provider endpoints
-finalize text; they do not decide when a help card should appear. Up to ten
-seconds of startup audio are retained in order. Overflow disables transcription
-with a diagnostic rather than dropping earlier frames and corrupting timestamps.
-Token issuance and socket initialization each have an eight-second timeout.
+## Audio and transcription
 
-## Speech and context
+The browser's AudioWorklet captures mono PCM16 audio at 16 kHz in 50 ms chunks.
+Those samples are sent to AssemblyAI and also feed a local adaptive RMS/
+hysteresis pause detector. Local pause timing uses sample counts rather than
+JavaScript callback timing.
 
-Turn messages replace previous content for their turn_order. Finalized turns
-cannot be overwritten by late partials, and duplicate finals do not duplicate
-the transcript or conversation log. The rolling hint context includes final and
-partial text (up to 6,000 characters); preview and feedback use final text only.
+The client waits for AssemblyAI's `Begin` message before showing the Listening
+state. The current `universal-3-5-pro` path selects balanced mode, continuous
+partials, 128 ms minimum turn silence, and 800 ms maximum turn silence. Token
+issuance and socket initialization each have an eight-second deadline.
 
-Local activity requires 200 ms above an adaptive threshold. While STT is online,
-a new automatic blank also requires new provider-confirmed speech. Late final
-messages from an earlier pause cannot rearm noise-only episodes. Initial silence
-does not display hints. Once armed, every pause waits 1,500 ms, including when
-STT is unavailable. An isolated activity burst shorter than 200 ms remains part
-of the pause; only sustained activity restarts the timer.
+Up to ten seconds of startup audio is retained in order. If that buffer would
+overflow, transcription is disabled with a diagnostic rather than silently
+dropping early audio and corrupting timestamps.
 
-## Preparing and displaying hints
+## Transcript consistency
 
-AI-generated Talk Maps contain three 40–70-word candidates per node: explanation,
-example and transition. Older/deterministic maps without candidates retain the
-legacy starter and prompt. New live hints target a 30–70-word continuation and
-carry a semantic node suggestion. Word count is a soft constraint: a structurally
-valid continuation outside the target is accepted and logged without another
-provider attempt. The server supplies the original input material,
-the map, final and partial context, and up to five actually displayed hints.
-Only an exact quote from final speech permits a permanent node-position update.
-A quote does not mark all previous topics covered.
+Provider messages are keyed by `turn_order`. A newer message replaces earlier
+content for the same turn. Finalized turns cannot be overwritten by late
+partials, and duplicate finals do not create duplicate transcript or timeline
+entries.
 
-The controller debounces finalized transcript or active-node changes for 300 ms
-and dispatches at most one request per three seconds, with a single request in
-flight and latest-context coalescing. Partial revisions update and invalidate
-context but do not dispatch provider work. Provider work is not assumed to stop
-when the browser aborts. A three-second backend deadline includes retries for
-malformed structured output; the client aborts after four seconds. Prefetch can
-consume quota even when no blank occurs.
+The browser keeps final and partial text in a bounded rolling hint context of up
+to 6,000 characters. Preview and feedback use final text only.
 
-At a blank, a matching cached AI candidate or unseen local candidate appears
-immediately. A live response can replace a fallback once within two seconds,
-provided its context is still current and speech has not resumed. Normalized
-punctuation-only changes preserve a candidate; substantive changes invalidate
-it. No AI request streams partially validated text onto the card.
+## Pause detection
+
+- The speaker must produce sustained activity before an automatic blank can be
+  considered.
+- The pause threshold is 1,500 ms after speech has started.
+- Activity shorter than 200 ms does not restart the pause timer.
+- Initial silence does not show an automatic hint.
+- When STT is online, a new automatic blank also requires new provider-confirmed
+  speech so background noise does not repeatedly trigger cards.
+- Manual Hint remains available even when automatic pause detection is not
+  triggered.
+
+## Hint lifecycle
+
+The browser debounces finalized transcript or active-node changes for 300 ms. It
+dispatches at most one request every three seconds, allows one request in
+flight, and keeps the latest context when requests overlap in time.
+
+At a confirmed blank, a cached AI candidate or an unseen deterministic candidate
+can appear immediately. A live response can replace that fallback once within
+two seconds only if the context is still current and speech has not resumed.
+Responses for stale contexts are ignored.
 
 Resuming speech changes the card to a reading state without removing its text.
-Dismiss hides it. The next blank can surface a fresh candidate; exhausted or
-duplicate candidates retain the existing guidance instead of cycling repeatedly.
-Manual Hint uses the same controller, but its display is not an automatic blank
-entry. Request diagnostics remain visible in the log.
+Dismiss hides the card. Showing a hint does not mark its Talk Map node as
+covered. A permanent node-position suggestion requires an exact quote from
+final speech.
 
-## Timeline and shutdown
+## Stop and restart
 
-The vertical, copyable Preview log contains speech start/end and transcript
-arrival timestamps, pause start/detection times, actually displayed hints, and
-collapsible diagnostics. Diagnostics distinguish provider fallback, request
-timeout, stale context, and reading-window suppression. Request durations and
-blank-to-display latency are recorded separately. Backend attempt logs include
-context ID, attempt, duration, word count and outcome; completion logs add the
-final source and generation status. Candidates never displayed are not logged
-as shown hints.
+Stopping ends assistance, flushes audio, sends AssemblyAI `Terminate`, and waits
+up to three seconds for the termination sequence. The client does not convert an
+unfinished partial into final speech after a timeout.
 
-Stopping ends assistance, flushes audio, sends Terminate, and reads until
-Termination (or a three-second timeout). This allows the last final turn to
-arrive before Preview. Timeout is recorded; the client does not claim an
-unfinished partial is a final transcript. Recording again resets controller
-history, pending requests, transcript turns, and the conversation timeline.
+Starting a new recording resets transcript turns, pending requests, pause
+episodes, controller history, and the conversation timeline.
 
-## Reference and validation
+## Provider references
 
 The streaming behavior follows AssemblyAI's
 [message sequence](https://www.assemblyai.com/docs/streaming/message-sequence),
 [turn detection](https://www.assemblyai.com/docs/streaming/turn-detection), and
 [WebSocket API](https://www.assemblyai.com/docs/streaming/api-spec/streaming-websocket).
-Run Node behavioral tests with `make test-frontend`. The browser acceptance
-target is p95 blank-to-local/cache-display below 100 ms in an active tab; this
-is a measurement target, not a guarantee for background tabs or AI network
-latency. See [validation.md](validation.md) for microphone acceptance scenarios.

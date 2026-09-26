@@ -1,74 +1,97 @@
 # Architecture
 
-The system has one web client and one FastAPI service. The client owns the
-camera preview, MediaRecorder lifecycle, local video object URL, audio capture,
-and direct realtime AssemblyAI socket. The API owns session preparation,
-provider credentials, persistence, document parsing, embeddings, retrieval,
-and post-recording generation.
+This document describes how the current web application is organized. For the
+user-facing product explanation, see [product.md](product.md). For running it,
+see [setup.md](setup.md) and [deployment-ec2.md](deployment-ec2.md).
 
-## Backend boundaries
+## Runtime shape
 
-`domain` contains the vocabulary shared by the use cases: sessions, Talk Map
-nodes, hints, feedback, and knowledge chunks. It has no framework or provider
-imports.
+```text
+Browser
+  ├── React UI, camera, local recording, pause detection
+  ├── REST requests ────────────────┐
+  └── AssemblyAI realtime WebSocket  │
+                                     ▼
+                              FastAPI backend
+                              ├── session and Talk Map use cases
+                              ├── temporary AssemblyAI token issuance
+                              ├── DeepSeek gateway
+                              ├── document parsing and embeddings
+                              └── PostgreSQL/pgvector repository
+```
 
-`application` contains the use cases and ports:
+The browser connects directly to AssemblyAI for streaming speech. The backend
+never sends the long-lived AssemblyAI key to the browser; it issues a
+short-lived token first.
 
-- `PrepareSession` creates a session and validates the 3–7 node Talk Map rule.
-- `UpdateTalkMap` saves speaker ordering changes.
-- `CompleteSession` persists the final transcript and flow events, then asks a
-  feedback generator for structured practice advice.
-- `KnowledgeService` parses, chunks, embeds, stores, retrieves, and answers
-  questions within one session.
+## Backend layers
 
-`infrastructure` implements the ports. The default production path uses the
-DeepSeek Responses API for Talk Maps, hints, feedback, and Q&A; AssemblyAI
-temporary STT tokens; PostgreSQL/pgvector; and the local FastEmbed model.
-Deterministic Talk Map, hint, and feedback adapters keep the core flow usable
-when no DeepSeek key is configured. Structured provider calls use JSON Schema;
-hint SSE output is buffered until the completed response is locally validated.
+The backend follows a clean-architecture dependency direction:
 
-The browser owns sample-based pause detection, a revision-aware transcript
-reducer, and an independently testable assistant controller. Final and partial
-turns share one canonical turn store. AI node suggestions require quoted final
-speech evidence before changing permanent map position; keyword hits no longer
-count as proof that a section is complete. Showing a hint never marks it covered.
+- `domain` contains the core vocabulary: sessions, Talk Map nodes, hints,
+  feedback, and knowledge chunks. It does not import FastAPI or provider SDKs.
+- `application` contains use cases and ports. It owns session preparation,
+  Talk Map updates, hint generation, completion feedback, and material Q&A.
+- `infrastructure` implements provider, database, document, embedding, and
+  configuration adapters.
+- `presentation` converts HTTP requests into validated application inputs and
+  converts application/provider failures into HTTP responses.
 
-The controller separates preparation, request deadlines, pause episodes and
-reading visibility. The browser-local conversation timeline includes diagnostic
-details; compact diagnostic state events are also sent with feedback. Original
-session material enters the hint generator through a domain context object.
-Optional candidate fields in stored JSON keep older sessions readable.
+Provider and framework details should stay at the infrastructure or
+presentation boundary. Domain and application code should remain usable without
+the web server or a live provider.
 
-`presentation` translates HTTP requests and provider failures into validated
-JSON responses. It does not contain matching or persistence rules.
+## Main data flow
+
+### Session preparation
+
+The user submits a topic, notes, or key points. The backend validates the input
+and creates a Talk Map with three to seven nodes. DeepSeek can generate the map;
+the deterministic generator is used when DeepSeek is not configured.
+
+### Realtime practice
+
+The browser captures microphone samples, sends audio to AssemblyAI, reduces
+partial and final transcript turns, and runs local pause detection. The backend
+receives bounded context only when it needs to generate a rescue hint.
+
+### Session completion
+
+The browser sends the final transcript and compact state events. The backend
+stores them with the Talk Map and asks the feedback generator for strengths,
+improvements, useful phrases, and a next practice.
+
+### Material questions
+
+The backend parses PDF or PPTX text, splits it into chunks, creates local
+384-dimensional embeddings, stores them in pgvector, and ranks chunks within the
+current session before asking the language model for an answer.
 
 ## Persistence
-
-The schema has three relationships:
 
 ```text
 speaking_sessions
   ├── knowledge_documents
-  │     └── knowledge_chunks (embedding vector(384))
-  └── JSONB Talk Map, transcript, flow events, feedback
+  │     └── knowledge_chunks (vector(384))
+  └── JSONB Talk Map, transcript, state events, feedback
 ```
 
-Session IDs are UUIDs. Access tokens are returned once to the browser and only
-their SHA-256 hashes are stored. Knowledge queries filter by session before
-ranking chunks, so one anonymous session cannot retrieve another session's
+Session IDs are UUIDs. The browser receives an opaque session token once; only
+its SHA-256 hash is stored. Knowledge searches always filter by session before
+ranking chunks, preventing one anonymous session from reading another session's
 materials.
 
-The SQL bootstrap file is used by Docker Compose. The application lifespan also
-creates the vector extension and tables, which keeps a separately managed local
-PostgreSQL instance usable during development. If the embedding model changes,
-its vector dimension must continue to match the `vector(384)` column or the
-schema must be migrated deliberately.
+The application creates the `vector` extension and tables during startup when a
+database URL is configured. Docker Compose also mounts the initial SQL
+bootstrap. If the embedding model changes, its vector dimension must remain
+compatible with `vector(384)` or the schema must be migrated deliberately.
 
-## Provider failure boundaries
+## Failure boundaries
 
-AssemblyAI and DeepSeek errors are converted into application errors. A failure
-to obtain a realtime token does not prevent local recording or local pause
-guidance; only the transcript is unavailable. Audio initialization failure still
-leaves recording and manual hints available. Document parsing and embedding
-failures stop that upload and do not create partial chunks.
+- AssemblyAI token failures do not stop local recording or local pause guidance.
+- DeepSeek failures fall back to deterministic Talk Maps, hints, or feedback
+  where those adapters exist.
+- Document parsing or embedding failures stop the upload without saving partial
+  chunks.
+- Delayed or stale hint responses are rejected by the browser when their
+  context is no longer current.

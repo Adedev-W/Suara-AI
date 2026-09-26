@@ -1,96 +1,71 @@
-# PRD validation checklist
+# Validation
+
+Use this document to decide whether a change is ready for a demo. Run commands
+from the repository root.
 
 ## Automated checks
 
-Run from the repository root:
+The complete local check is:
 
 ```bash
-make lint
-make format-check
-make typecheck
-make test
-make build
+make check
 ```
 
-Focused backend tests cover bounded Talk Maps for long input, invalid active
-nodes, contextual hint inputs, and deterministic fallback when the provider is
-unavailable. The opt-in end-to-end conversation scenario starts the real ASGI
-server as a separate process, uses HTTPX to call the public REST endpoints,
-sends real text turns, waits in real time, and calls the configured DeepSeek
-Responses API. It prints the conversation timeline and returned data for
-inspection with `-s`.
+It runs backend and frontend linting, formatting checks, type checks, tests, and
+builds. The frontend uses Node 24's built-in test runner; it does not yet have
+a browser test runner.
 
-Run the live conversation from `apps/backend`:
+The live backend conversation test is opt-in because it calls DeepSeek and
+consumes provider quota:
 
 ```bash
-SUARAAI_RUN_LIVE_LLM_TESTS=1 .venv/bin/pytest \
-  tests/e2e/test_realtime_conversation.py -s -vv
+SUARAAI_RUN_LIVE_LLM_TESTS=1 make test-backend
 ```
 
-The test requires `DEEPSEEK_API_KEY` in the shell environment or repository
-`.env` and consumes provider quota. Without the explicit
-`SUARAAI_RUN_LIVE_LLM_TESTS=1` flag, the scenario is skipped. The backend test
-uses REST because the current backend exposes REST hint endpoints; AssemblyAI
-streaming WebSocket and browser media capture are separate frontend/provider
-paths and are not simulated by this text scenario.
+Without that flag, the test is skipped. It exercises the public REST flow, not
+microphone hardware or the AssemblyAI WebSocket.
 
-The frontend `test` command runs behavioral tests using Node 24+ and its built-in
-TypeScript stripping, in one process so individual cases appear in the report.
-No runtime test dependency is required. Tests exercise
-the transcript reducer, streaming parser, sample-based pause detector, and
-assistant controller with injected clocks and deferred provider responses.
-Type checking is separate. These tests do not exercise microphone hardware or
-browser layout.
+## Product acceptance flow
 
-## Manual acceptance
+1. Open the setup screen and submit a topic, notes, or key points.
+2. Confirm that the Talk Map contains 3–7 concise nodes.
+3. Reorder a node and confirm the change is saved before camera readiness.
+4. Grant camera and microphone permission. Confirm the preview is mirrored.
+5. Start recording and confirm the timer, listening state, partial transcript,
+   and finalized transcript update.
+6. Speak, pause for less than 1.5 seconds, and confirm no automatic hint appears.
+7. Continue the pause beyond 1.5 seconds and confirm a cached or deterministic
+   hint appears.
+8. Press Hint manually and confirm a readable continuation appears.
+9. Resume speaking and confirm a late response cannot replace a current card.
+10. Stop recording and verify local playback, WebM download, and the timeline.
+11. Open the conversation log and verify speech, transcript, blank, hint, and
+    diagnostic entries are present and copyable.
+12. Request feedback and confirm strengths, improvements, useful phrases, and a
+    next practice are shown.
+13. Upload a text-bearing PDF or PPTX and ask a question about it.
+14. Confirm the answer includes source metadata when material context is found.
+15. Open browser developer tools and confirm the long-lived AssemblyAI key is
+    never sent to the browser.
 
-1. Open the setup screen, choose Topic, Notes, or Key points, and submit text.
-2. Confirm the Talk Map contains 3–7 concise nodes and that moving a node is
-   saved before camera readiness.
-3. Allow camera and microphone access. Confirm the preview is mirrored in the
-   readiness and recording screens.
-4. Start recording. Confirm the timer and listening status update in real time.
-   Speak a sentence and confirm partial words appear in the Live transcript
-   panel while you speak, then settle into the final transcript when the turn
-   completes. Confirm partial text updates visible context without dispatching a
-   hint request until final context advances, and permanent Talk Map position
-   changes require an AI suggestion backed by final speech.
-5. Stay silent for more than 1.5 seconds before first speaking and confirm no
-   automatic hint appears. Speak, pause for 1.4 seconds, and confirm no hint;
-   continue any pause beyond 1.5 seconds and confirm a cached AI or local
-   candidate appears. Repeat with quiet speech, short clicks and background
-   noise; activity shorter than 200 ms must not restart the pause timer, and
-   noise without new recognized speech must not generate repeated blank events.
-6. Press Hint and confirm a readable continuation appears. Live AI hints should
-   target 30–70 words; prepared candidates should contain 40–70 words. Confirm
-   a fallback can be replaced once within two seconds; then it stays stable.
-   Resume speaking and read along: the card must remain visible, and late AI responses must not
-   change its text. Dismiss the card and verify the next genuine blank can show
-   guidance. With STT disconnected, confirm recording and local 1.5-second
-   pause guidance continue. Legacy maps may retain short fallback prompts.
-7. Stop recording, play the local preview, and download the WebM recording.
-   Open View conversation log and confirm a vertical timeline contains each
-   finalized utterance, every automatic blank with pause/detection times, and
-   the deterministic hint plus any accepted AI replacement. Confirm the close
-   button and Escape return to Preview, and Copy log places the same formatted
-   timeline on the clipboard. Confirm speech timestamps differ from transcript
-   arrival timestamps. Expand diagnostics to inspect provider latency, fallback,
-   timeout and stale-response decisions. Manual displays are not automatic hint
-   entries; their request diagnostics can still appear.
-8. Choose Record again and confirm the previous conversation log is cleared.
-9. Request feedback and confirm the result includes strengths, improvements,
-   useful phrases, and a concrete next practice.
-10. Upload a text-bearing PDF or PPTX, ask a question about it, and confirm the
-   answer includes retrieved source metadata. Uploading an unsupported type or
-   unreadable document should return a controlled error.
-11. Open browser developer tools and confirm the long-lived AssemblyAI key is
-    absent from frontend requests and storage.
-12. Replay the reported AI-topic example. After the user defines AI, the next
-    suggestion should explain a use or example instead of asking for the same
-    definition. Delay final transcripts and AI responses independently to test
-    stale-context rejection. Prefetch should remain limited to one request in
-    flight and one dispatch per three seconds.
-13. Measure at least 20 local/cache displays in an active tab. Target p95 under
-    100 ms from blank confirmation to visible card; log dispatch timing and
-    inspect browser paint timing separately. Do not count network generation
-    time as local display latency or claim this target from unit tests alone.
+## Realtime edge cases
+
+Manually test these when changing audio, transcript, or hint code:
+
+- initial silence does not create a hint;
+- short clicks and noise do not repeatedly restart a pause;
+- STT disconnects leave local recording and deterministic pause guidance usable;
+- duplicate final messages do not duplicate transcript entries;
+- delayed AI responses for stale contexts are ignored;
+- only one hint request is in flight;
+- recording again clears the previous conversation history;
+- stopping during a partial turn does not claim that partial as final speech.
+
+## Performance target
+
+For an active browser tab, measure at least 20 local or cached hint displays. The
+target is p95 under 100 ms from blank confirmation to visible card. Do not
+include network AI generation time in this local-display measurement.
+
+This is a validation target, not a guarantee for background browser tabs or
+provider latency.

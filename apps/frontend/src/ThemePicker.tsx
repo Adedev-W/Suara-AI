@@ -4,11 +4,20 @@ type ThemePreference = 'system' | 'light' | 'dark'
 
 const themes: ThemePreference[] = ['system', 'light', 'dark']
 
+function readStoredPreference(): ThemePreference {
+  const initial = document.documentElement.dataset.themePreference
+  if (initial === 'light' || initial === 'dark') return initial
+
+  try {
+    const stored = localStorage.getItem('suaraai-theme')
+    return stored === 'light' || stored === 'dark' ? stored : 'system'
+  } catch {
+    return 'system'
+  }
+}
+
 export function ThemePicker() {
-  const [preference, setPreference] = useState<ThemePreference>(() => {
-    const initial = document.documentElement.dataset.themePreference
-    return initial === 'light' || initial === 'dark' ? initial : 'system'
-  })
+  const [preference, setPreference] = useState<ThemePreference>(readStoredPreference)
 
   useEffect(() => {
     const media = window.matchMedia('(prefers-color-scheme: dark)')

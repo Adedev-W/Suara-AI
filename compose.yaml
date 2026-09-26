@@ -1,4 +1,26 @@
 services:
+  caddy:
+    image: caddy:2-alpine
+    environment:
+      CADDY_DOMAIN: ${CADDY_DOMAIN:-:80}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    healthcheck:
+      test: ["CMD", "caddy", "validate", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    restart: unless-stopped
+    depends_on:
+      frontend:
+        condition: service_healthy
+
   database:
     image: pgvector/pgvector:pg16
     environment:
@@ -9,7 +31,7 @@ services:
       - suaraai-postgres:/var/lib/postgresql/data
       - ./apps/backend/migrations/001_initial.sql:/docker-entrypoint-initdb.d/001_initial.sql:ro
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-suaraai} -d ${POSTGRES_DB:-suaraai}"]
       interval: 5s
@@ -28,7 +50,7 @@ services:
       SUARAAI_DEEPSEEK_BASE_URL: ${SUARAAI_DEEPSEEK_BASE_URL:-https://api.deepseek.com}
       SUARAAI_DEEPSEEK_MODEL: ${SUARAAI_DEEPSEEK_MODEL:-deepseek-flash}
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     healthcheck:
       test:
         - CMD-SHELL
@@ -54,7 +76,7 @@ services:
       backend:
         condition: service_healthy
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
     healthcheck:
       test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8080/"]
       interval: 10s
@@ -65,3 +87,5 @@ services:
 
 volumes:
   suaraai-postgres:
+  caddy-data:
+  caddy-config:

@@ -5,6 +5,13 @@
 .footer { margin-top: auto; padding: 28px 0; }
 .brand { display: inline-flex; align-items: center; color: var(--ink); text-decoration: none; }
 .brand img { width: 132px; height: auto; display: block; }
+.brand-logo-dark { display: none !important; }
+:root[data-theme="dark"] .brand-logo-light { display: none; }
+:root[data-theme="dark"] .brand-logo-dark { display: block !important; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .brand-logo-light { display: none; }
+  :root:not([data-theme="light"]) .brand-logo-dark { display: block !important; }
+}
 .theme-picker { display: inline-flex; align-items: center; gap: 8px; margin: 0; padding: 0; border: 0; }
 .theme-option { display: inline-flex; align-items: center; gap: 4px; margin-left: 9px; cursor: pointer; }
 .theme-option input { accent-color: var(--accent); }
