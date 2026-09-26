@@ -2,6 +2,10 @@ FROM ghcr.io/astral-sh/uv:0.12.1 AS uv
 
 FROM python:3.14-slim AS builder
 
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends build-essential \
+    && rm -rf /var/lib/apt/lists/*
+    
 ENV UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy
 
