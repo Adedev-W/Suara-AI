@@ -1,7 +1,7 @@
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="assets/suaraai-overview_dark.png">
-    <source media="(prefers-color-scheme: light)" srcset="assets/suaraai-overview_light.png">
+    <source media="(prefers-color-scheme: dark)" srcset="assets/suaraai-overview_light.png">
+    <source media="(prefers-color-scheme: light)" srcset="assets/suaraai-overview_dark.png">
     <img src="assets/suaraai-overview_light.png" alt="SuaraAI" width="440">
   </picture>
 </p>
